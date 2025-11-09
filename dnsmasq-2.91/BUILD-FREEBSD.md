@@ -1,13 +1,38 @@
-# Building dnsmasq with SQLite on FreeBSD
+# Building dnsmasq with SQLite + PCRE2 on FreeBSD
 
-## Prerequisites
+## Quick Start (Automated)
+
+**Recommended for FreeBSD 14.3:**
+
+```bash
+# Run automated build script (installs dependencies automatically)
+sudo ./build-freebsd.sh
+
+# Or clean build:
+sudo ./build-freebsd.sh clean
+```
+
+The script will:
+- ✅ Install sqlite3, pcre2, gmake (if missing)
+- ✅ Set up build environment automatically
+- ✅ Compile with SQLite + PCRE2 regex support
+- ✅ Create test database with examples
+- ✅ Show quick test commands
+
+**Skip to "Testing" section below after running the script.**
+
+---
+
+## Manual Build
+
+### Prerequisites
 
 ```bash
 # Install dependencies
-pkg install sqlite3 gmake
+pkg install sqlite3 pcre2 gmake
 ```
 
-## Build
+### Build
 
 ### Option 1: Using gmake (recommended)
 
@@ -117,16 +142,64 @@ endif
 
 ## Testing
 
-```bash
-# Create test database
-cd dnsmasq-2.91/watchlists
-../createdb-dual.sh test.db
+### Basic SQLite Test
 
-# Add test domain
-echo "test.com" | sqlite3 test.db "INSERT INTO domain (Domain, IPv4, IPv6) VALUES ('test.com', '10.0.0.1', 'fd00::1');"
+```bash
+# Create test database (if not already created by build-freebsd.sh)
+./createdb-regex.sh test.db
+
+# Add test domains
+sqlite3 test.db <<EOF
+-- Exact match only
+INSERT INTO domain_exact (Domain, IPv4, IPv6) VALUES ('exact.test.com', '10.0.1.1', 'fd00:1::1');
+
+-- Wildcard (blocks domain + subdomains)
+INSERT INTO domain (Domain, IPv4, IPv6) VALUES ('wildcard.test.com', '10.0.2.1', 'fd00:2::1');
+
+-- Regex pattern
+INSERT INTO domain_regex (Pattern, IPv4, IPv6) VALUES ('^ads\\..*', '10.0.3.1', 'fd00:3::1');
+EOF
 
 # Run dnsmasq
 ./src/dnsmasq -d -p 5353 --db-file=test.db --db-block-ipv4=0.0.0.0 --db-block-ipv6=:: --log-queries
+```
+
+### Test Queries (in another terminal)
+
+```bash
+# Test exact match
+dig @127.0.0.1 -p 5353 exact.test.com
+# Expected: 10.0.1.1
+
+# Test wildcard (subdomain should match)
+dig @127.0.0.1 -p 5353 sub.wildcard.test.com
+# Expected: 10.0.2.1
+
+# Test regex pattern
+dig @127.0.0.1 -p 5353 ads.example.com
+# Expected: 10.0.3.1 (matched by ^ads\\..* pattern)
+
+# Test with AAAA (IPv6)
+dig @127.0.0.1 -p 5353 AAAA exact.test.com
+# Expected: fd00:1::1
+```
+
+### Import regex-block.txt (if you have one)
+
+```bash
+# Create your regex patterns file
+cat > regex-block.txt <<EOF
+^ads\\..*
+.*\\.tracker\\.com$
+^(www|cdn)\\.analytics\\..*
+EOF
+
+# Import with specific IP-set
+./add-regex-patterns.sh 10.0.5.1 fd00:5::1 test.db
+
+# Test
+dig @127.0.0.1 -p 5353 ads.whatever.com
+# Expected: 10.0.5.1
 ```
 
 ## Installation (Optional)
@@ -150,15 +223,26 @@ dnsmasq_flags="-d -p 53 --db-file=/var/db/dnsmasq/blocklist.db --db-block-ipv4=0
 
 ## Ports/Packages Notes
 
-This is a custom build with SQLite integration. The official FreeBSD dnsmasq port does NOT include SQLite support.
+This is a custom build with **SQLite + PCRE2 regex** integration. The official FreeBSD dnsmasq port does NOT include these features.
 
-Do not install the official port if you want SQLite functionality:
+Do not install the official port if you want SQLite/regex functionality:
 ```bash
-# DON'T do this if you want SQLite:
+# DON'T do this if you want SQLite + regex:
 # pkg install dns/dnsmasq
 ```
 
 Instead, use this custom build.
+
+### Feature Comparison
+
+| Feature | Official FreeBSD Port | This Build |
+|---------|----------------------|------------|
+| Basic DNS | ✅ | ✅ |
+| SQLite exact match | ❌ | ✅ |
+| SQLite wildcard | ❌ | ✅ |
+| PCRE2 regex | ❌ | ✅ |
+| Per-domain IPs | ❌ | ✅ |
+| 400+ IP-sets | ❌ | ✅ |
 
 ## Troubleshooting
 
