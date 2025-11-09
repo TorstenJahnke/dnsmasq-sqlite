@@ -2307,7 +2307,23 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
 	    }
 	}
     }
-  
+
+#ifdef HAVE_SQLITE
+  /* SQLite DNS Blocker: Check if domain should be blocked */
+  if (!ans)
+    {
+      if (db_check_block(name))
+	{
+	  /* Domain is in database -> BLOCK it */
+	  ans = 1;
+	  nxdomain = 1;
+	  sec_data = 0;
+	  log_query(F_CONFIG | F_NEG, name, NULL, NULL, 0);
+	}
+      /* Domain NOT in database -> forward normally (ans stays 0) */
+    }
+#endif
+
   if (!ans)
     return 0; /* failed to answer a question */
 

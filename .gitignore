@@ -1,0 +1,13 @@
+# Build artifacts
+*.o
+*.a
+dnsmasq-2.91/src/dnsmasq
+dnsmasq-2.91/src/.copts_*
+
+# Database files
+*.db
+*.db-journal
+
+# Temp files
+*~
+*.swp

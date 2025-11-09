@@ -195,6 +195,7 @@ struct myoption {
 #define LOPT_PXE_OPT       386
 #define LOPT_NO_ENCODE     387
 #define LOPT_DO_ENCODE     388
+#define LOPT_DB_FILE       500
 
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -394,6 +395,7 @@ static const struct myoption opts[] =
     { "use-stale-cache", 2, 0 , LOPT_STALE_CACHE },
     { "no-ident", 0, 0, LOPT_NO_IDENT },
     { "max-tcp-connections", 1, 0, LOPT_MAX_PROCS },
+    { "db-file", 1, 0, LOPT_DB_FILE },
     { NULL, 0, 0, 0 }
   };
 
@@ -600,6 +602,7 @@ static struct {
   { LOPT_NO_IDENT, OPT_NO_IDENT, NULL, gettext_noop("Do not add CHAOS TXT records."), NULL },
   { LOPT_CACHE_RR, ARG_DUP, "<RR-type>", gettext_noop("Cache this DNS resource record type."), NULL },
   { LOPT_MAX_PROCS, ARG_ONE, "<integer>", gettext_noop("Maximum number of concurrent tcp connections."), NULL },
+  { LOPT_DB_FILE, ARG_ONE, "<path>", gettext_noop("Load domains from Sqlite .db"), NULL },
   { 0, 0, NULL, NULL, NULL }
 }; 
 
@@ -5396,6 +5399,14 @@ err:
 	daemon->max_procs = max_procs;
 	break;
       }
+
+#ifdef HAVE_SQLITE
+    case LOPT_DB_FILE:
+      {
+	db_set_file(opt_string_alloc(arg));
+	break;
+      }
+#endif
 
     default:
       ret_err(_("unsupported option (check that dnsmasq was compiled with DHCP/TFTP/DNSSEC/DBus support)"));
