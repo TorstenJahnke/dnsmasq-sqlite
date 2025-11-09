@@ -2,7 +2,8 @@
 #ifdef HAVE_SQLITE
 
 static sqlite3 *db = NULL;
-static sqlite3_stmt *db_domain_exists = NULL;
+static sqlite3_stmt *db_domain_exact = NULL;     /* For exact-only matching (hosts-style) */
+static sqlite3_stmt *db_domain_wildcard = NULL;  /* For wildcard matching (*.domain) */
 static char *db_file = NULL;
 
 /* Termination addresses for blocked domains */
@@ -27,33 +28,54 @@ void db_init(void)
     exit(1);
   }
 
-  /* Query checks both exact match AND parent domain match (wildcard)
-   * Example: If "example.com" is in DB, it blocks:
-   *   - example.com (exact match)
-   *   - www.example.com (subdomain match)
-   *   - mail.server.example.com (nested subdomain match)
+  /* Prepare statement for exact-only matching (hosts-style)
+   * Table: domain_exact
+   * Blocks ONLY the exact domain, NOT subdomains
+   * Example: "paypal-evil.de" blocks ONLY "paypal-evil.de"
+   */
+  sqlite3_prepare(
+    db,
+    "SELECT COUNT(*) FROM domain_exact WHERE Domain = ?",
+    -1,
+    &db_domain_exact,
+    NULL
+  );
+  /* Note: Ignore error if table doesn't exist - it's optional */
+
+  /* Prepare statement for wildcard matching
+   * Table: domain
+   * Blocks domain AND all subdomains
+   * Example: "paypal-evil.de" blocks "paypal-evil.de", "*.paypal-evil.de", etc.
    */
   if (sqlite3_prepare(
     db,
     "SELECT COUNT(*) FROM domain WHERE Domain = ? OR ? LIKE '%.' || Domain",
     -1,
-    &db_domain_exists,
+    &db_domain_wildcard,
     NULL
   ))
   {
-    fprintf(stderr, "Can't prepare statement: %s\n", sqlite3_errmsg(db));
+    fprintf(stderr, "Can't prepare wildcard statement: %s\n", sqlite3_errmsg(db));
     exit(1);
   }
+
+  printf("SQLite blocker ready: exact-match + wildcard support\n");
 }
 
 void db_cleanup(void)
 {
   printf("cleaning up database...\n");
 
-  if (db_domain_exists)
+  if (db_domain_exact)
   {
-    sqlite3_finalize(db_domain_exists);
-    db_domain_exists = NULL;
+    sqlite3_finalize(db_domain_exact);
+    db_domain_exact = NULL;
+  }
+
+  if (db_domain_wildcard)
+  {
+    sqlite3_finalize(db_domain_wildcard);
+    db_domain_wildcard = NULL;
   }
 
   if (db)
@@ -79,33 +101,66 @@ void db_set_file(char *path)
   db_file = path;
 }
 
-// FIXED: Umbenannt von db_check_allow zu db_check_block für klarere Semantik
-// Wird zusammen mit der invertierten Logik in rfc1035.c verwendet
+/* Check if domain should be blocked
+ * Supports two modes:
+ * 1. Exact-only (hosts-style): domain_exact table
+ *    - Blocks ONLY the exact domain
+ * 2. Wildcard: domain table
+ *    - Blocks domain AND all subdomains (*.domain)
+ */
 int db_check_block(const char *name)
 {
   db_init();
 
   if (!db)
   {
-    return 0;  // FIXED: Wenn keine DB → nicht blockieren (war 1)
+    return 0;  /* No DB → don't block */
   }
 
-  sqlite3_reset(db_domain_exists);
-  int row_exists = 0;
+  int blocked = 0;
 
-  /* Bind domain name to both parameters (exact match and wildcard match) */
-  if (sqlite3_bind_text(db_domain_exists, 1, name, -1, SQLITE_TRANSIENT) ||
-      sqlite3_bind_text(db_domain_exists, 2, name, -1, SQLITE_TRANSIENT))
+  /* Check 1: Exact-only table (hosts-style matching)
+   * Example: "paypal-evil.de" in domain_exact blocks ONLY "paypal-evil.de"
+   */
+  if (db_domain_exact)
   {
-    fprintf(stderr, "Can't bind text parameter: %s\n", sqlite3_errmsg(db));
-  }
-  else if (sqlite3_step(db_domain_exists) == SQLITE_ROW)
-  {
-    row_exists = sqlite3_column_int(db_domain_exists, 0);
+    sqlite3_reset(db_domain_exact);
+    if (sqlite3_bind_text(db_domain_exact, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    {
+      if (sqlite3_step(db_domain_exact) == SQLITE_ROW)
+      {
+        blocked = sqlite3_column_int(db_domain_exact, 0);
+        if (blocked)
+        {
+          printf("block (exact): %s\n", name);
+          return 1;
+        }
+      }
+    }
   }
 
-  printf("block: %s %d\n", name, row_exists);  // FIXED: "block" statt "exists"
-  return row_exists;
+  /* Check 2: Wildcard table (subdomain matching)
+   * Example: "paypal-evil.de" in domain blocks "paypal-evil.de" AND "*.paypal-evil.de"
+   */
+  if (db_domain_wildcard)
+  {
+    sqlite3_reset(db_domain_wildcard);
+    if (sqlite3_bind_text(db_domain_wildcard, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(db_domain_wildcard, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    {
+      if (sqlite3_step(db_domain_wildcard) == SQLITE_ROW)
+      {
+        blocked = sqlite3_column_int(db_domain_wildcard, 0);
+        if (blocked)
+        {
+          printf("block (wildcard): %s\n", name);
+          return 1;
+        }
+      }
+    }
+  }
+
+  return 0;  /* Not blocked */
 }
 
 /* Set IPv4 termination address for blocked domains */
