@@ -185,6 +185,7 @@ RESOLVFILE
 #define HAVE_LOOP
 #define HAVE_DUMPFILE
 #define HAVE_SQLITE
+#define HAVE_REGEX
 
 /* Build options which require external libraries.
    
