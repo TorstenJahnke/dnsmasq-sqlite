@@ -2307,7 +2307,91 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
 	    }
 	}
     }
-  
+
+#ifdef HAVE_SQLITE
+  /* SQLite DNS Blocker: Check if domain should be blocked
+   * Blocks ALL record types (A, AAAA, MX, TXT, CNAME, etc.)
+   * Supports wildcard matching (*.example.com if example.com is in DB)
+   * Supports per-domain termination IPs (10-20 different IP destinations)
+   */
+  if (!ans)
+    {
+      char *db_ipv4 = NULL;
+      char *db_ipv6 = NULL;
+
+      if (db_get_block_ips(name, &db_ipv4, &db_ipv6))
+	{
+	  /* Domain is in database -> BLOCK it for ALL record types */
+	  ans = 1;
+	  sec_data = 0;
+	  int answered = 0;
+
+	  /* Use per-domain IPs from DB, or fallback to global termination IPs */
+	  struct in_addr ipv4_addr;
+	  struct in6_addr ipv6_addr;
+	  struct in_addr *ipv4_term = NULL;
+	  struct in6_addr *ipv6_term = NULL;
+
+	  /* Parse IPv4 from DB or use fallback */
+	  if (db_ipv4 && inet_pton(AF_INET, db_ipv4, &ipv4_addr) == 1)
+	    {
+	      ipv4_term = &ipv4_addr;
+	    }
+	  else
+	    {
+	      ipv4_term = db_get_block_ipv4();  /* Fallback to global --db-block-ipv4 */
+	    }
+
+	  /* Parse IPv6 from DB or use fallback */
+	  if (db_ipv6 && inet_pton(AF_INET6, db_ipv6, &ipv6_addr) == 1)
+	    {
+	      ipv6_term = &ipv6_addr;
+	    }
+	  else
+	    {
+	      ipv6_term = db_get_block_ipv6();  /* Fallback to global --db-block-ipv6 */
+	    }
+
+	  /* For A queries (or ANY), return IPv4 termination address if set */
+	  if ((qtype == T_A || qtype == T_ANY) && ipv4_term)
+	    {
+	      if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+				      60, NULL, T_A, C_IN, "4", ipv4_term))
+		{
+		  anscount++;
+		  answered = 1;
+		  log_query(F_CONFIG | F_IPV4, name, (union all_addr *)ipv4_term, NULL, 0);
+		}
+	    }
+
+	  /* For AAAA queries (or ANY), return IPv6 termination address if set */
+	  if ((qtype == T_AAAA || qtype == T_ANY) && ipv6_term)
+	    {
+	      if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+				      60, NULL, T_AAAA, C_IN, "6", ipv6_term))
+		{
+		  anscount++;
+		  answered = 1;
+		  log_query(F_CONFIG | F_IPV6, name, (union all_addr *)ipv6_term, NULL, 0);
+		}
+	    }
+
+	  /* For all other record types (MX, TXT, CNAME, etc.) or if no termination IP set:
+	   * Return NXDOMAIN to block the domain completely */
+	  if (!answered)
+	    {
+	      nxdomain = 1;
+	      log_query(F_CONFIG | F_NEG, name, NULL, NULL, 0);
+	    }
+
+	  /* Free dynamically allocated strings from DB */
+	  if (db_ipv4) free(db_ipv4);
+	  if (db_ipv6) free(db_ipv6);
+	}
+      /* Domain NOT in database -> forward normally (ans stays 0) */
+    }
+#endif
+
   if (!ans)
     return 0; /* failed to answer a question */
 

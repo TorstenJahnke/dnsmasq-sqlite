@@ -1,0 +1,8 @@
+# TEMPLATE Wildcard Blocklist
+# Blocks domain + all subdomains (*.domain)
+# One domain per line
+#
+# Example:
+# ads.example.com
+# tracker.example.net
+# malware.example.org

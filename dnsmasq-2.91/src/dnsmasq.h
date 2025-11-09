@@ -1922,4 +1922,19 @@ int add_update_server(int flags,
 		      union mysockaddr *source_addr,
 		      const char *interface,
 		      const char *domain,
-		      union all_addr *local_addr); 
+		      union all_addr *local_addr);
+
+/* db.c */
+#ifdef HAVE_SQLITE
+#include <sqlite3.h>
+
+void db_set_file(char *file);
+void db_init(void);
+void db_cleanup(void);
+int db_check_block(const char *domain);
+int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
+void db_set_block_ipv4(struct in_addr *addr);
+void db_set_block_ipv6(struct in6_addr *addr);
+struct in_addr *db_get_block_ipv4(void);
+struct in6_addr *db_get_block_ipv6(void);
+#endif 
