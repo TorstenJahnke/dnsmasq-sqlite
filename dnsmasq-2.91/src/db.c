@@ -29,13 +29,13 @@ void db_init(void)
   }
 
   /* Prepare statement for exact-only matching (hosts-style)
-   * Table: domain_exact
+   * Table: domain_exact (Domain, IPv4, IPv6)
    * Blocks ONLY the exact domain, NOT subdomains
-   * Example: "paypal-evil.de" blocks ONLY "paypal-evil.de"
+   * Returns IPv4 and IPv6 termination addresses
    */
   sqlite3_prepare(
     db,
-    "SELECT COUNT(*) FROM domain_exact WHERE Domain = ?",
+    "SELECT IPv4, IPv6 FROM domain_exact WHERE Domain = ?",
     -1,
     &db_domain_exact,
     NULL
@@ -43,13 +43,13 @@ void db_init(void)
   /* Note: Ignore error if table doesn't exist - it's optional */
 
   /* Prepare statement for wildcard matching
-   * Table: domain
+   * Table: domain (Domain, IPv4, IPv6)
    * Blocks domain AND all subdomains
-   * Example: "paypal-evil.de" blocks "paypal-evil.de", "*.paypal-evil.de", etc.
+   * Returns IPv4 and IPv6 for the longest matching domain (most specific)
    */
   if (sqlite3_prepare(
     db,
-    "SELECT COUNT(*) FROM domain WHERE Domain = ? OR ? LIKE '%.' || Domain",
+    "SELECT IPv4, IPv6 FROM domain WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
     -1,
     &db_domain_wildcard,
     NULL
@@ -59,7 +59,7 @@ void db_init(void)
     exit(1);
   }
 
-  printf("SQLite blocker ready: exact-match + wildcard support\n");
+  printf("SQLite blocker ready: exact-match + wildcard support (per-domain termination IPs)\n");
 }
 
 void db_cleanup(void)
@@ -101,14 +101,20 @@ void db_set_file(char *path)
   db_file = path;
 }
 
-/* Check if domain should be blocked
+/* Check if domain should be blocked and get termination IPs
  * Supports two modes:
  * 1. Exact-only (hosts-style): domain_exact table
  *    - Blocks ONLY the exact domain
  * 2. Wildcard: domain table
  *    - Blocks domain AND all subdomains (*.domain)
+ *
+ * Returns:
+ *   1 if blocked (ipv4_out and ipv6_out are set to IPs from DB, or NULL if not in DB)
+ *   0 if not blocked
+ *
+ * Caller must free ipv4_out and ipv6_out if not NULL
  */
-int db_check_block(const char *name)
+int db_get_block_ips(const char *name, char **ipv4_out, char **ipv6_out)
 {
   db_init();
 
@@ -117,7 +123,12 @@ int db_check_block(const char *name)
     return 0;  /* No DB → don't block */
   }
 
-  int blocked = 0;
+  /* Initialize outputs */
+  if (ipv4_out) *ipv4_out = NULL;
+  if (ipv6_out) *ipv6_out = NULL;
+
+  const unsigned char *ipv4_text = NULL;
+  const unsigned char *ipv6_text = NULL;
 
   /* Check 1: Exact-only table (hosts-style matching)
    * Example: "paypal-evil.de" in domain_exact blocks ONLY "paypal-evil.de"
@@ -129,12 +140,19 @@ int db_check_block(const char *name)
     {
       if (sqlite3_step(db_domain_exact) == SQLITE_ROW)
       {
-        blocked = sqlite3_column_int(db_domain_exact, 0);
-        if (blocked)
-        {
-          printf("block (exact): %s\n", name);
-          return 1;
-        }
+        /* Domain found in exact table */
+        ipv4_text = sqlite3_column_text(db_domain_exact, 0);  /* IPv4 */
+        ipv6_text = sqlite3_column_text(db_domain_exact, 1);  /* IPv6 */
+
+        if (ipv4_out && ipv4_text)
+          *ipv4_out = strdup((const char *)ipv4_text);
+        if (ipv6_out && ipv6_text)
+          *ipv6_out = strdup((const char *)ipv6_text);
+
+        printf("block (exact): %s → IPv4=%s IPv6=%s\n", name,
+               ipv4_text ? (const char *)ipv4_text : "(fallback)",
+               ipv6_text ? (const char *)ipv6_text : "(fallback)");
+        return 1;
       }
     }
   }
@@ -150,17 +168,30 @@ int db_check_block(const char *name)
     {
       if (sqlite3_step(db_domain_wildcard) == SQLITE_ROW)
       {
-        blocked = sqlite3_column_int(db_domain_wildcard, 0);
-        if (blocked)
-        {
-          printf("block (wildcard): %s\n", name);
-          return 1;
-        }
+        /* Domain found in wildcard table */
+        ipv4_text = sqlite3_column_text(db_domain_wildcard, 0);  /* IPv4 */
+        ipv6_text = sqlite3_column_text(db_domain_wildcard, 1);  /* IPv6 */
+
+        if (ipv4_out && ipv4_text)
+          *ipv4_out = strdup((const char *)ipv4_text);
+        if (ipv6_out && ipv6_text)
+          *ipv6_out = strdup((const char *)ipv6_text);
+
+        printf("block (wildcard): %s → IPv4=%s IPv6=%s\n", name,
+               ipv4_text ? (const char *)ipv4_text : "(fallback)",
+               ipv6_text ? (const char *)ipv6_text : "(fallback)");
+        return 1;
       }
     }
   }
 
   return 0;  /* Not blocked */
+}
+
+/* Legacy function for backwards compatibility */
+int db_check_block(const char *name)
+{
+  return db_get_block_ips(name, NULL, NULL);
 }
 
 /* Set IPv4 termination address for blocked domains */

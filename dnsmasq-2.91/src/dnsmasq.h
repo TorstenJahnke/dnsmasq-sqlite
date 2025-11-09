@@ -1932,6 +1932,7 @@ void db_set_file(char *file);
 void db_init(void);
 void db_cleanup(void);
 int db_check_block(const char *domain);
+int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
 void db_set_block_ipv4(struct in_addr *addr);
 void db_set_block_ipv6(struct in6_addr *addr);
 struct in_addr *db_get_block_ipv4(void);

@@ -21,14 +21,20 @@ echo "Creating schema..."
 sqlite3 "$DB_FILE" <<EOF
 -- Exact-only matching (hosts-style)
 -- Blocks ONLY the exact domain, NOT subdomains
+-- IPv4/IPv6: Per-domain termination IPs (supports 10-20 different IP sets)
 CREATE TABLE IF NOT EXISTS domain_exact (
-    Domain TEXT PRIMARY KEY
+    Domain TEXT PRIMARY KEY,
+    IPv4 TEXT,
+    IPv6 TEXT
 ) WITHOUT ROWID;
 
 -- Wildcard matching (*.domain)
 -- Blocks domain AND all subdomains
+-- IPv4/IPv6: Per-domain termination IPs (supports 10-20 different IP sets)
 CREATE TABLE IF NOT EXISTS domain (
-    Domain TEXT PRIMARY KEY
+    Domain TEXT PRIMARY KEY,
+    IPv4 TEXT,
+    IPv6 TEXT
 ) WITHOUT ROWID;
 EOF
 
@@ -36,12 +42,14 @@ echo "✅ Schema created"
 echo ""
 
 # Function: Fast batch import
-# Args: $1=file $2=table (domain|domain_exact) $3=column $4=skip_lines
+# Args: $1=file $2=table (domain|domain_exact) $3=column $4=skip_lines $5=ipv4(optional) $6=ipv6(optional)
 import_list() {
     local file="$1"
     local table="$2"
     local column="${3:-1}"
     local skip_lines="${4:-0}"
+    local default_ipv4="${5:-}"
+    local default_ipv6="${6:-}"
 
     if [ ! -f "$file" ]; then
         echo "⚠️  File not found: $file (skipping)"
@@ -52,7 +60,8 @@ import_list() {
     echo "Importing into $table: $file"
 
     # Fast batch import with transactions
-    awk -v col="$column" -v skip="$skip_lines" -v batch="$BATCH_SIZE" -v table="$table" '
+    awk -v col="$column" -v skip="$skip_lines" -v batch="$BATCH_SIZE" -v table="$table" \
+        -v ipv4="$default_ipv4" -v ipv6="$default_ipv6" '
         NR <= skip { next }
         {
             if (NF >= col) {
@@ -69,7 +78,15 @@ import_list() {
             if (count >= batch) {
                 print "BEGIN TRANSACTION;"
                 for (i = 0; i < count; i++) {
-                    printf "INSERT OR IGNORE INTO %s VALUES (\"%s\");\n", table, domains[i]
+                    if (ipv4 != "" && ipv6 != "") {
+                        printf "INSERT OR IGNORE INTO %s (Domain, IPv4, IPv6) VALUES (\"%s\", \"%s\", \"%s\");\n", table, domains[i], ipv4, ipv6
+                    } else if (ipv4 != "") {
+                        printf "INSERT OR IGNORE INTO %s (Domain, IPv4) VALUES (\"%s\", \"%s\");\n", table, domains[i], ipv4
+                    } else if (ipv6 != "") {
+                        printf "INSERT OR IGNORE INTO %s (Domain, IPv6) VALUES (\"%s\", \"%s\");\n", table, domains[i], ipv6
+                    } else {
+                        printf "INSERT OR IGNORE INTO %s (Domain) VALUES (\"%s\");\n", table, domains[i]
+                    }
                 }
                 print "COMMIT;"
                 count = 0
@@ -81,7 +98,15 @@ import_list() {
             if (count > 0) {
                 print "BEGIN TRANSACTION;"
                 for (i = 0; i < count; i++) {
-                    printf "INSERT OR IGNORE INTO %s VALUES (\"%s\");\n", table, domains[i]
+                    if (ipv4 != "" && ipv6 != "") {
+                        printf "INSERT OR IGNORE INTO %s (Domain, IPv4, IPv6) VALUES (\"%s\", \"%s\", \"%s\");\n", table, domains[i], ipv4, ipv6
+                    } else if (ipv4 != "") {
+                        printf "INSERT OR IGNORE INTO %s (Domain, IPv4) VALUES (\"%s\", \"%s\");\n", table, domains[i], ipv4
+                    } else if (ipv6 != "") {
+                        printf "INSERT OR IGNORE INTO %s (Domain, IPv6) VALUES (\"%s\", \"%s\");\n", table, domains[i], ipv6
+                    } else {
+                        printf "INSERT OR IGNORE INTO %s (Domain) VALUES (\"%s\");\n", table, domains[i]
+                    }
                 }
                 print "COMMIT;"
             }
@@ -170,13 +195,20 @@ echo "Usage Examples"
 echo "========================================="
 echo ""
 echo "# Add domain to exact-only table (hosts-style):"
-echo "sqlite3 $DB_FILE \"INSERT INTO domain_exact VALUES ('paypal-evil.de');\""
+echo "sqlite3 $DB_FILE \"INSERT INTO domain_exact (Domain, IPv4, IPv6) VALUES ('paypal-evil.de', '10.0.0.1', 'fd00::1');\""
 echo "  → Blocks ONLY paypal-evil.de"
 echo "  → www.paypal-evil.de is NOT blocked"
+echo "  → Returns 10.0.0.1 / fd00::1"
 echo ""
 echo "# Add domain to wildcard table:"
-echo "sqlite3 $DB_FILE \"INSERT INTO domain VALUES ('ads.com');\""
+echo "sqlite3 $DB_FILE \"INSERT INTO domain (Domain, IPv4, IPv6) VALUES ('ads.com', '10.0.0.2', 'fd00::2');\""
 echo "  → Blocks ads.com AND *.*.*.ads.com (all subdomains!)"
+echo "  → Returns 10.0.0.2 / fd00::2"
+echo ""
+echo "# Add without IPs (uses global --db-block-ipv4/6 fallback):"
+echo "sqlite3 $DB_FILE \"INSERT INTO domain (Domain) VALUES ('tracker.net');\""
+echo "  → Blocks tracker.net + all subdomains"
+echo "  → Returns IPs from --db-block-ipv4 and --db-block-ipv6"
 echo ""
 echo "# Start dnsmasq:"
 echo "./src/dnsmasq -d -p 5353 \\"

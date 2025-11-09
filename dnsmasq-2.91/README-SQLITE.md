@@ -163,15 +163,56 @@ sqlite3 blocklist.db "SELECT COUNT(*) as total FROM domain;"
 
 ## 📝 Datenbank-Schema
 
+### Aktuelles Schema (mit per-domain Termination IPs)
+
 ```sql
+-- Wildcard-Matching (domain + alle Subdomains)
 CREATE TABLE domain (
-    Domain TEXT PRIMARY KEY
+    Domain TEXT PRIMARY KEY,
+    IPv4 TEXT,              -- Optional: Per-domain Termination IPv4
+    IPv6 TEXT               -- Optional: Per-domain Termination IPv6
+) WITHOUT ROWID;
+
+-- Exact-Matching (nur exakte Domain, keine Subdomains)
+CREATE TABLE domain_exact (
+    Domain TEXT PRIMARY KEY,
+    IPv4 TEXT,              -- Optional: Per-domain Termination IPv4
+    IPv6 TEXT               -- Optional: Per-domain Termination IPv6
 ) WITHOUT ROWID;
 
 CREATE UNIQUE INDEX idx_Domain ON domain(Domain);
+CREATE UNIQUE INDEX idx_Domain_exact ON domain_exact(Domain);
 ```
 
 **Hinweis**: `WITHOUT ROWID` macht die Tabelle ~30% kleiner und schneller!
+
+### Dual-Table Mode
+
+✅ **Wildcard** (`domain`): Blockt Domain + **alle Subdomains** (*.domain)
+✅ **Exact** (`domain_exact`): Blockt **nur** die exakte Domain (hosts-style)
+
+### Per-Domain Termination IPs (10-20 IP-Sets)
+
+✅ Jede Domain kann **ein** IPv4/IPv6-Paar haben
+✅ Unterstützt **10-20 unterschiedliche IP-Sets**
+✅ Fallback auf globale `--db-block-ipv4/6` wenn keine IPs in DB
+
+**Beispiel:**
+```sql
+-- IP-Set 1: Werbung
+INSERT INTO domain (Domain, IPv4, IPv6) VALUES ('ads.com', '10.0.0.1', 'fd00::1');
+
+-- IP-Set 2: Tracking
+INSERT INTO domain (Domain, IPv4, IPv6) VALUES ('tracker.net', '10.0.0.2', 'fd00::2');
+
+-- IP-Set 3: Malware
+INSERT INTO domain (Domain, IPv4, IPv6) VALUES ('malware.org', '10.0.0.3', 'fd00::3');
+
+-- Fallback (nutzt globale --db-block-ipv4/6)
+INSERT INTO domain (Domain) VALUES ('spam.io');
+```
+
+Siehe `MULTI-IP-SETS.md` für Details!
 
 ## 🧪 Wildcard-Matching Beispiele
 
