@@ -1,6 +1,63 @@
 # Building dnsmasq with SQLite + PCRE2 on FreeBSD
 
-## Quick Start (Automated)
+## Quick Start Guide
+
+Choose your scenario:
+
+### 🆕 New Installation (No existing dnsmasq)
+
+```bash
+# 1. Build
+sudo ./build-freebsd.sh
+
+# 2. Install
+sudo ./install-freebsd.sh
+
+# 3. Edit config
+vi /usr/local/etc/dnsmasq/dnsmasq.conf
+# Configure: upstream servers, listen-address, interfaces
+
+# 4. Import your blocklists
+./convert-hosts-to-sqlite.sh /path/to/hosts.txt /var/db/dnsmasq/blocklist.db
+# OR
+./add-regex-patterns.sh 0.0.0.0 :: /var/db/dnsmasq/blocklist.db
+
+# 5. Start
+echo 'dnsmasq_enable="YES"' >> /etc/rc.conf
+service dnsmasq start
+```
+
+### 🔄 Migration (Existing dnsmasq with hosts/regex files)
+
+```bash
+# 1. Build
+sudo ./build-freebsd.sh
+
+# 2. Migrate (auto-converts your existing files)
+sudo ./migrate-to-sqlite-freebsd.sh
+
+# 3. Test
+dnsmasq --test -C /usr/local/etc/dnsmasq/dnsmasq.conf
+
+# 4. Restart
+service dnsmasq restart
+```
+
+### 🧪 Just Testing / Development
+
+```bash
+# Build only
+sudo ./build-freebsd.sh
+
+# Test manually
+./src/dnsmasq -d -p 5353 --db-file=test-freebsd.db --log-queries
+```
+
+---
+
+## Detailed Build Instructions
+
+### Build (Automated)
 
 **Recommended for FreeBSD 14.3:**
 
@@ -18,8 +75,6 @@ The script will:
 - ✅ Compile with SQLite + PCRE2 regex support
 - ✅ Create test database with examples
 - ✅ Show quick test commands
-
-**Skip to "Testing" section below after running the script.**
 
 ---
 
@@ -202,7 +257,51 @@ dig @127.0.0.1 -p 5353 ads.whatever.com
 # Expected: 10.0.5.1
 ```
 
-## Installation (Optional)
+## Installation
+
+### New Installation (Recommended)
+
+**Automated installation with config generation:**
+
+```bash
+# Install binary, create configs, and directory structure
+sudo ./install-freebsd.sh
+
+# Or specify custom database location
+sudo ./install-freebsd.sh /custom/path/blocklist.db
+```
+
+This will:
+- Install binary to `/usr/local/sbin/dnsmasq`
+- Create `/usr/local/etc/dnsmasq/` with config files
+- Create `/var/db/dnsmasq/` for database
+- Generate rc.d service script
+- Create empty SQLite database
+
+**Then edit the config to match your network:**
+```bash
+vi /usr/local/etc/dnsmasq/dnsmasq.conf
+# Set your upstream servers, listen-address, etc.
+```
+
+### Migration from Existing dnsmasq
+
+**If you have existing dnsmasq with hosts/regex files:**
+
+```bash
+# Migrate existing hosts + regex files to SQLite
+sudo ./migrate-to-sqlite-freebsd.sh
+```
+
+This will:
+- Scan your config for `addn-hosts=` entries
+- Convert all hosts files to SQLite
+- Convert regex files to SQLite
+- Backup original files
+- Update config to use SQLite
+- Comment out old hosts entries
+
+### Manual Installation
 
 ```bash
 # Install system-wide
@@ -213,12 +312,35 @@ cp src/dnsmasq /usr/local/sbin/
 chmod 755 /usr/local/sbin/dnsmasq
 ```
 
-## rc.conf Integration
+## Service Management
+
+### Enable at boot
 
 ```bash
-# /etc/rc.conf
-dnsmasq_enable="YES"
-dnsmasq_flags="-d -p 53 --db-file=/var/db/dnsmasq/blocklist.db --db-block-ipv4=0.0.0.0 --db-block-ipv6=::"
+# Add to /etc/rc.conf
+echo 'dnsmasq_enable="YES"' >> /etc/rc.conf
+
+# Start service
+service dnsmasq start
+
+# Stop service
+service dnsmasq stop
+
+# Restart service
+service dnsmasq restart
+
+# Check status
+service dnsmasq status
+```
+
+### Manual start (for testing)
+
+```bash
+# Foreground with logging
+/usr/local/sbin/dnsmasq -d -C /usr/local/etc/dnsmasq/dnsmasq.conf --log-queries
+
+# Background
+/usr/local/sbin/dnsmasq -C /usr/local/etc/dnsmasq/dnsmasq.conf
 ```
 
 ## Ports/Packages Notes
