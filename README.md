@@ -1,29 +1,63 @@
-
 # dnsmasq-sqlite
 
-This is a slightly modified version of `dnsmasq` that requires that any domain
-that will be resolved must first be in an Sqlite database, which may contain
-lots of domains, potentially tens of millions to hundreds of millions of
-domains.
+SQLite-basierter DNS-Blocker für DNSMASQ
 
-## Building
+## Projekt-Status
 
-Building from source on Ubuntu/Debian can be done with:
+Dieses Repository wird gerade umstrukturiert:
 
-    sudo apt install build-essential libsqlite3-dev
-    git clone https://github.com/krisives/dnsmasq-sqlite.git
-    cd dnsmasq-sqlite
-    make
+1. ✅ **Legacy-Code gesichert** (`legacy/` Verzeichnis)
+   - Originale SQLite-Integration für dnsmasq v2.81 (2018)
+   - Enthält Bug-Fix Dokumentation und korrigierte Version
 
-You can now run a debugging version like this:
+2. ⏳ **Warte auf aktuellen DNSMASQ Source Code**
+   - Wird auf aktuelle Version portiert (v2.90 oder neuer)
 
-    ./src/dnsmasq -d -p 9999 --db-file domains.db --log-queries
+3. 📋 **Next Steps**
+   - SQLite-Integration auf neue DNSMASQ-Version portieren
+   - Logik-Bug beheben (Whitelist → Blacklist)
+   - Testen und dokumentieren
 
-With the DNS server running you can issue a test query via:
+## Was ist dnsmasq-sqlite?
 
-    dig @127.0.0.1 -p 9999 google.com
+Eine modifizierte Version von DNSMASQ die SQLite nutzt um DNS-Requests dynamisch zu blockieren:
 
-## Creating a Database
+### Funktionsweise (DNS-Blocker)
+- Domain **in Datenbank** → wird blockiert (NXDOMAIN)
+- Domain **nicht in Datenbank** → normale Weiterleitung an DNS-Forwarder
 
-A basic script that downloads a list of the top 10 million domains and
-imports it into an Sqlite3 database is provided in `createdb.sh`
+### Vorteile
+- 🚀 **Dynamisch**: Domains zur Laufzeit hinzufügen/entfernen (kein DNSMASQ-Restart nötig)
+- ⚡ **Schnell**: Indexierte SQLite-Lookups für Millionen von Domains
+- 💾 **Effizient**: Weniger RAM als große Hosts-Dateien
+- 🔧 **Flexibel**: Standard SQL für Domain-Management
+
+## Legacy-Integration (v2.81)
+
+Details zur ursprünglichen Integration finden sich in `legacy/INTEGRATION.md`
+
+**Wichtiger Hinweis**: Die ursprüngliche v2.81 Integration hatte einen Logik-Bug (Whitelist statt Blacklist). Die korrigierte Version ist als `legacy/db-FIXED.c` verfügbar.
+
+## Verwendung (nach Portierung)
+
+```bash
+# DNSMASQ mit SQLite-Blocker starten
+./src/dnsmasq -d -p 9999 --db-file blocklist.db --log-queries
+
+# Domain zur Blocklist hinzufügen (zur Laufzeit!)
+sqlite3 blocklist.db "INSERT INTO domain VALUES ('ads.example.com');"
+
+# Domain freigeben
+sqlite3 blocklist.db "DELETE FROM domain WHERE Domain='ads.example.com';"
+```
+
+## Building (nach Portierung)
+
+```bash
+sudo apt install build-essential libsqlite3-dev
+make
+```
+
+## Lizenz
+
+Wie DNSMASQ selbst (GPL v2/v3)
