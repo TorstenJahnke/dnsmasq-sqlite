@@ -7,6 +7,8 @@
 #endif
 
 static sqlite3 *db = NULL;
+static sqlite3_stmt *db_dns_allow = NULL;        /* For DNS forwarding (whitelist) */
+static sqlite3_stmt *db_dns_block = NULL;        /* For DNS forwarding (blacklist) */
 static sqlite3_stmt *db_domain_exact = NULL;     /* For exact-only matching (hosts-style) */
 static sqlite3_stmt *db_domain_wildcard = NULL;  /* For wildcard matching (*.domain) */
 static sqlite3_stmt *db_domain_regex = NULL;     /* For regex pattern matching */
@@ -88,6 +90,42 @@ void db_init(void)
 
   printf("SQLite performance optimizations enabled (mmap=256MB, cache=400MB)\n");
 
+  /* ========================================================================
+   * DNS FORWARDING: Prepare statements (checked FIRST in lookup order)
+   * ======================================================================== */
+
+  /* Prepare statement for DNS allow (whitelist)
+   * Table: domain_dns_allow (Domain, Server)
+   * Forward specific domains to real DNS servers (bypass blocker)
+   * Example: trusted-ads.com → 8.8.8.8
+   */
+  sqlite3_prepare(
+    db,
+    "SELECT Server FROM domain_dns_allow WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
+    -1,
+    &db_dns_allow,
+    NULL
+  );
+  /* Note: Ignore error if table doesn't exist - it's optional */
+
+  /* Prepare statement for DNS block (blacklist)
+   * Table: domain_dns_block (Domain, Server)
+   * Forward domains to blocker DNS server
+   * Example: *.xyz → 10.0.0.1 (blocker DNS)
+   */
+  sqlite3_prepare(
+    db,
+    "SELECT Server FROM domain_dns_block WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
+    -1,
+    &db_dns_block,
+    NULL
+  );
+  /* Note: Ignore error if table doesn't exist - it's optional */
+
+  /* ========================================================================
+   * TERMINATION IPs: Prepare statements (return fixed IPs directly)
+   * ======================================================================== */
+
   /* Prepare statement for exact-only matching (hosts-style)
    * Table: domain_exact (Domain, IPv4, IPv6)
    * Blocks ONLY the exact domain, NOT subdomains
@@ -134,15 +172,27 @@ void db_init(void)
   );
   /* Note: Ignore error if table doesn't exist - it's optional */
 
-  printf("SQLite blocker ready: exact + wildcard + regex (per-domain termination IPs)\n");
+  printf("SQLite ready: DNS forwarding + blocker (exact/wildcard/regex + per-domain IPs)\n");
 #else
-  printf("SQLite blocker ready: exact-match + wildcard support (per-domain termination IPs)\n");
+  printf("SQLite ready: DNS forwarding + blocker (exact/wildcard + per-domain IPs)\n");
 #endif
 }
 
 void db_cleanup(void)
 {
   printf("cleaning up database...\n");
+
+  if (db_dns_allow)
+  {
+    sqlite3_finalize(db_dns_allow);
+    db_dns_allow = NULL;
+  }
+
+  if (db_dns_block)
+  {
+    sqlite3_finalize(db_dns_block);
+    db_dns_block = NULL;
+  }
 
   if (db_domain_exact)
   {
@@ -191,6 +241,80 @@ void db_set_file(char *path)
   }
 
   db_file = path;
+}
+
+/* Check if domain should be forwarded to specific DNS server
+ * Lookup order (whitelist before blacklist):
+ * 1. domain_dns_allow (whitelist): Forward to real DNS (bypasses blocker)
+ * 2. domain_dns_block (blacklist): Forward to blocker DNS
+ *
+ * Returns:
+ *   DNS server string (e.g., "8.8.8.8" or "10.0.0.1#5353") if forwarding needed
+ *   NULL if no forwarding (continue with normal processing)
+ *
+ * Caller must free returned string
+ */
+char *db_get_forward_server(const char *name)
+{
+  db_init();
+
+  if (!db)
+  {
+    return NULL;  /* No DB → no forwarding */
+  }
+
+  const unsigned char *server_text = NULL;
+
+  /* Check 1: DNS Allow (whitelist) - Forward to real DNS
+   * Example: "trusted-ads.com" in domain_dns_allow → forward to 8.8.8.8
+   * This bypasses the blocker for trusted domains
+   */
+  if (db_dns_allow)
+  {
+    sqlite3_reset(db_dns_allow);
+    if (sqlite3_bind_text(db_dns_allow, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(db_dns_allow, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    {
+      if (sqlite3_step(db_dns_allow) == SQLITE_ROW)
+      {
+        /* Domain found in allow list */
+        server_text = sqlite3_column_text(db_dns_allow, 0);  /* Server */
+
+        if (server_text)
+        {
+          printf("forward (allow): %s → %s\n", name, (const char *)server_text);
+          return strdup((const char *)server_text);
+        }
+      }
+    }
+  }
+
+  /* Check 2: DNS Block (blacklist) - Forward to blocker DNS
+   * Example: "evil.xyz" in domain_dns_block → forward to 10.0.0.1 (blocker DNS)
+   * The blocker DNS returns 0.0.0.0 for everything
+   */
+  if (db_dns_block)
+  {
+    sqlite3_reset(db_dns_block);
+    if (sqlite3_bind_text(db_dns_block, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(db_dns_block, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    {
+      if (sqlite3_step(db_dns_block) == SQLITE_ROW)
+      {
+        /* Domain found in block list */
+        server_text = sqlite3_column_text(db_dns_block, 0);  /* Server */
+
+        if (server_text)
+        {
+          printf("forward (block): %s → %s\n", name, (const char *)server_text);
+          return strdup((const char *)server_text);
+        }
+      }
+    }
+  }
+
+  /* Not in forwarding tables → continue with normal processing */
+  return NULL;
 }
 
 /* Check if domain should be blocked and get termination IPs

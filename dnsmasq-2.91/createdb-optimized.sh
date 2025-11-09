@@ -27,13 +27,53 @@ echo ""
 # Create database with optimized schema
 sqlite3 "$DB_FILE" <<'EOF'
 -- ============================================================================
--- OPTIMIZED SCHEMA for dnsmasq SQLite blocker
+-- OPTIMIZED SCHEMA for dnsmasq SQLite blocker + DNS forwarding
 -- Performance: 2-3x faster than basic schema
 -- Requires: SQLite 3.47+ for best performance (Bloom filters)
 -- ============================================================================
 
+-- ============================================================================
+-- DNS FORWARDING TABLES (checked FIRST in lookup order)
+-- ============================================================================
+
 -- ----------------------------------------------------------------------------
--- Table 1: Exact Match (no subdomains)
+-- Table 1: DNS Allow (Whitelist) - Exact Match
+-- Forward specific domains to real DNS servers (bypasses blocking)
+-- Example: trusted-ads.com → 8.8.8.8 (allow this ad domain)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS domain_dns_allow (
+    Domain TEXT PRIMARY KEY,
+    Server TEXT NOT NULL  -- DNS server: "8.8.8.8" or "1.1.1.1#5353" (with port)
+) WITHOUT ROWID;
+
+-- Covering Index for allow table
+CREATE INDEX IF NOT EXISTS idx_dns_allow_covering
+ON domain_dns_allow(Domain, Server);
+
+-- ----------------------------------------------------------------------------
+-- Table 2: DNS Block (Blacklist) - Wildcard Match
+-- Forward domains to blocker DNS server (e.g., internal DNS that returns 0.0.0.0)
+-- Example: *.xyz → 10.0.0.1 (block all .xyz domains via blocker DNS)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS domain_dns_block (
+    Domain TEXT PRIMARY KEY,
+    Server TEXT NOT NULL  -- Blocker DNS server: "10.0.0.1"
+) WITHOUT ROWID;
+
+-- Covering Index for block table
+CREATE INDEX IF NOT EXISTS idx_dns_block_covering
+ON domain_dns_block(Domain, Server);
+
+-- Index for LIKE queries (wildcard matching)
+CREATE INDEX IF NOT EXISTS idx_dns_block_wildcard
+ON domain_dns_block(Domain COLLATE RTRIM);
+
+-- ============================================================================
+-- TERMINATION TABLES (return fixed IPs directly)
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- Table 3: Exact Match (no subdomains)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS domain_exact (
     Domain TEXT PRIMARY KEY,
@@ -123,10 +163,10 @@ CREATE TABLE IF NOT EXISTS db_metadata (
 ) WITHOUT ROWID;
 
 INSERT OR REPLACE INTO db_metadata (key, value) VALUES
-    ('schema_version', '2.0'),
+    ('schema_version', '3.0'),
     ('created', datetime('now')),
     ('optimized', 'true'),
-    ('features', 'without_rowid,covering_indexes,mmap,wal');
+    ('features', 'without_rowid,covering_indexes,mmap,wal,dns_forwarding');
 
 EOF
 

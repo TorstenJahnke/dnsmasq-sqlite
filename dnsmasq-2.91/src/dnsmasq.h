@@ -1931,6 +1931,7 @@ int add_update_server(int flags,
 void db_set_file(char *file);
 void db_init(void);
 void db_cleanup(void);
+char *db_get_forward_server(const char *domain);  /* DNS forwarding (returns server or NULL) */
 int db_check_block(const char *domain);
 int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
 void db_set_block_ipv4(struct in_addr *addr);
