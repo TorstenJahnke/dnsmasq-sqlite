@@ -5,6 +5,12 @@ static sqlite3 *db = NULL;
 static sqlite3_stmt *db_domain_exists = NULL;
 static char *db_file = NULL;
 
+/* Termination addresses for blocked domains */
+static struct in_addr db_block_ipv4;
+static struct in6_addr db_block_ipv6;
+static int db_has_ipv4 = 0;
+static int db_has_ipv6 = 0;
+
 void db_init(void)
 {
   if (!db_file || db)
@@ -21,9 +27,15 @@ void db_init(void)
     exit(1);
   }
 
+  /* Query checks both exact match AND parent domain match (wildcard)
+   * Example: If "example.com" is in DB, it blocks:
+   *   - example.com (exact match)
+   *   - www.example.com (subdomain match)
+   *   - mail.server.example.com (nested subdomain match)
+   */
   if (sqlite3_prepare(
     db,
-    "select count(*) from domain where Domain=?",
+    "SELECT COUNT(*) FROM domain WHERE Domain = ? OR ? LIKE '%.' || Domain",
     -1,
     &db_domain_exists,
     NULL
@@ -81,17 +93,11 @@ int db_check_block(const char *name)
   sqlite3_reset(db_domain_exists);
   int row_exists = 0;
 
-  if (
-    sqlite3_bind_text(
-      db_domain_exists,
-      1,
-      name,
-      -1,
-      SQLITE_TRANSIENT
-    )
-  )
+  /* Bind domain name to both parameters (exact match and wildcard match) */
+  if (sqlite3_bind_text(db_domain_exists, 1, name, -1, SQLITE_TRANSIENT) ||
+      sqlite3_bind_text(db_domain_exists, 2, name, -1, SQLITE_TRANSIENT))
   {
-    fprintf(stderr, "Can't bind text parameter: %s", sqlite3_errmsg(db));
+    fprintf(stderr, "Can't bind text parameter: %s\n", sqlite3_errmsg(db));
   }
   else if (sqlite3_step(db_domain_exists) == SQLITE_ROW)
   {
@@ -100,6 +106,46 @@ int db_check_block(const char *name)
 
   printf("block: %s %d\n", name, row_exists);  // FIXED: "block" statt "exists"
   return row_exists;
+}
+
+/* Set IPv4 termination address for blocked domains */
+void db_set_block_ipv4(struct in_addr *addr)
+{
+  if (addr)
+    {
+      db_block_ipv4 = *addr;
+      db_has_ipv4 = 1;
+
+      char ip_str[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, addr, ip_str, sizeof(ip_str));
+      printf("SQLite blocker: IPv4 termination set to %s\n", ip_str);
+    }
+}
+
+/* Set IPv6 termination address for blocked domains */
+void db_set_block_ipv6(struct in6_addr *addr)
+{
+  if (addr)
+    {
+      db_block_ipv6 = *addr;
+      db_has_ipv6 = 1;
+
+      char ip_str[INET6_ADDRSTRLEN];
+      inet_ntop(AF_INET6, addr, ip_str, sizeof(ip_str));
+      printf("SQLite blocker: IPv6 termination set to %s\n", ip_str);
+    }
+}
+
+/* Get IPv4 termination address (returns NULL if not set) */
+struct in_addr *db_get_block_ipv4(void)
+{
+  return db_has_ipv4 ? &db_block_ipv4 : NULL;
+}
+
+/* Get IPv6 termination address (returns NULL if not set) */
+struct in6_addr *db_get_block_ipv6(void)
+{
+  return db_has_ipv6 ? &db_block_ipv6 : NULL;
 }
 
 #endif

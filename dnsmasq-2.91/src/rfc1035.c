@@ -2309,16 +2309,54 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
     }
 
 #ifdef HAVE_SQLITE
-  /* SQLite DNS Blocker: Check if domain should be blocked */
+  /* SQLite DNS Blocker: Check if domain should be blocked
+   * Blocks ALL record types (A, AAAA, MX, TXT, CNAME, etc.)
+   * Supports wildcard matching (*.example.com if example.com is in DB)
+   */
   if (!ans)
     {
       if (db_check_block(name))
 	{
-	  /* Domain is in database -> BLOCK it */
+	  /* Domain is in database -> BLOCK it for ALL record types */
 	  ans = 1;
-	  nxdomain = 1;
 	  sec_data = 0;
-	  log_query(F_CONFIG | F_NEG, name, NULL, NULL, 0);
+
+	  /* Check if termination IPs are configured */
+	  struct in_addr *ipv4_term = db_get_block_ipv4();
+	  struct in6_addr *ipv6_term = db_get_block_ipv6();
+	  int answered = 0;
+
+	  /* For A queries (or ANY), return IPv4 termination address if set */
+	  if ((qtype == T_A || qtype == T_ANY) && ipv4_term)
+	    {
+	      if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+				      60, NULL, T_A, C_IN, "4", ipv4_term))
+		{
+		  anscount++;
+		  answered = 1;
+		  log_query(F_CONFIG | F_IPV4, name, (union all_addr *)ipv4_term, NULL, 0);
+		}
+	    }
+
+	  /* For AAAA queries (or ANY), return IPv6 termination address if set */
+	  if ((qtype == T_AAAA || qtype == T_ANY) && ipv6_term)
+	    {
+	      if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+				      60, NULL, T_AAAA, C_IN, "6", ipv6_term))
+		{
+		  anscount++;
+		  answered = 1;
+		  log_query(F_CONFIG | F_IPV6, name, (union all_addr *)ipv6_term, NULL, 0);
+		}
+	    }
+
+	  /* For all other record types (MX, TXT, CNAME, etc.) or if no termination IP set:
+	   * Return NXDOMAIN to block the domain completely */
+	  if (!answered)
+	    {
+	      nxdomain = 1;
+	      log_query(F_CONFIG | F_NEG, name, NULL, NULL, 0);
+	    }
 	}
       /* Domain NOT in database -> forward normally (ans stays 0) */
     }
