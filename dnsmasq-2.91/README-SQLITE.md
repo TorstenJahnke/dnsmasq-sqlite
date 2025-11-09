@@ -1,4 +1,4 @@
-# dnsmasq v2.91 mit SQLite DNS-Blocker
+# dnsmasq v2.91 mit SQLite DNS-Blocker + Regex
 
 Diese Version von dnsmasq enthält eine SQLite-Integration, die es ermöglicht, DNS-Anfragen dynamisch zu blockieren.
 
@@ -8,6 +8,13 @@ Diese Version von dnsmasq enthält eine SQLite-Integration, die es ermöglicht, 
 - **Domain NICHT in Datenbank** → normale Weiterleitung an DNS-Forwarder
 
 ## ✨ Features
+
+### ⚡ Drei Matching-Modi
+1. **Exact-only** (`domain_exact` Tabelle): Blockt NUR die exakte Domain (wie hosts-Datei)
+2. **Wildcard** (`domain` Tabelle): Blockt Domain + alle Subdomains (empfohlen!)
+3. **Regex** (`domain_regex` Tabelle): Blockt mit PCRE-Patterns (mächtig aber langsam!)
+
+Siehe [README-REGEX.md](README-REGEX.md) für Regex-Details.
 
 ### Wildcard/Subdomain-Matching
 Wenn `paypal-crime.de` in der Datenbank ist, werden automatisch **ALLE Subdomains** geblockt:
