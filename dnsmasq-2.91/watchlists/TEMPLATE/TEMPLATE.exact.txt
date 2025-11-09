@@ -1,0 +1,7 @@
+# TEMPLATE Exact-Only Blocklist
+# Blocks ONLY the exact domain, NOT subdomains (hosts-style)
+# One domain per line
+#
+# Example:
+# paypal-evil.de (blocks ONLY paypal-evil.de, NOT www.paypal-evil.de)
+# suspicious.com
