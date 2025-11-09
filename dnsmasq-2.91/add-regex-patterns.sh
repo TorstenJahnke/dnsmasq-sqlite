@@ -1,25 +1,31 @@
 #!/bin/bash
 # Simple script to add regex patterns to database
-# Usage: ./add-regex-patterns.sh patterns.txt [database.db] [ipv4] [ipv6]
+# Usage: ./add-regex-patterns.sh [ipv4] [ipv6] [database.db]
 
 set -e
 
-PATTERN_FILE="${1}"
-DB_FILE="${2:-blocklist.db}"
-IPV4="${3:-0.0.0.0}"
-IPV6="${4:-::}"
+# Defaults
+PATTERN_FILE="regex-block.txt"
+IPV4="${1:-0.0.0.0}"
+IPV6="${2:-::}"
+DB_FILE="${3:-blocklist.db}"
 
-if [ -z "$PATTERN_FILE" ]; then
-    echo "Usage: $0 <patterns.txt> [database.db] [ipv4] [ipv6]"
+# Help
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "Usage: $0 [ipv4] [ipv6] [database.db]"
     echo ""
-    echo "Example:"
-    echo "  $0 my-patterns.txt blocklist.db 10.0.1.1 fd00:1::1"
+    echo "Reads patterns from: regex-block.txt (one regex per line)"
     echo ""
-    echo "patterns.txt format (one regex per line):"
+    echo "Examples:"
+    echo "  $0                              # Use defaults (0.0.0.0, ::, blocklist.db)"
+    echo "  $0 10.0.1.1 fd00:1::1           # Custom IP-Set"
+    echo "  $0 10.0.1.1 fd00:1::1 mydb.db   # Custom IP-Set + DB"
+    echo ""
+    echo "regex-block.txt format:"
     echo "  ^ads\\..*"
     echo "  .*\\.tracker\\.com$"
-    echo "  ^(www|cdn)\\.analytics\\."
-    exit 1
+    echo "  # Comments are ignored"
+    exit 0
 fi
 
 if [ ! -f "$PATTERN_FILE" ]; then
