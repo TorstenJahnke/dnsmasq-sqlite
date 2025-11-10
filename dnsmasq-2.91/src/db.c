@@ -7,18 +7,18 @@
 #endif
 
 static sqlite3 *db = NULL;
-static sqlite3_stmt *db_dns_allow = NULL;        /* For DNS forwarding (whitelist) */
-static sqlite3_stmt *db_dns_block = NULL;        /* For DNS forwarding (blacklist) */
-static sqlite3_stmt *db_domain_exact = NULL;     /* For exact-only matching (hosts-style) */
-static sqlite3_stmt *db_domain_wildcard = NULL;  /* For wildcard matching (*.domain) */
-static sqlite3_stmt *db_domain_regex = NULL;     /* For regex pattern matching */
+static sqlite3_stmt *db_block_regex = NULL;      /* For regex pattern matching → IPSetTerminate */
+static sqlite3_stmt *db_block_exact = NULL;      /* For exact matching → IPSetTerminate */
+static sqlite3_stmt *db_block_wildcard = NULL;   /* For wildcard matching → IPSetDNSBlock */
+static sqlite3_stmt *db_fqdn_dns_allow = NULL;   /* For DNS allow (whitelist) → IPSetDNSAllow */
+static sqlite3_stmt *db_fqdn_dns_block = NULL;   /* For DNS block (blacklist) → IPSetDNSBlock */
 static char *db_file = NULL;
 
-/* Termination addresses for blocked domains */
-static struct in_addr db_block_ipv4;
-static struct in6_addr db_block_ipv6;
-static int db_has_ipv4 = 0;
-static int db_has_ipv6 = 0;
+/* IPSet configurations (comma-separated strings from config) */
+static char *ipset_terminate_v4 = NULL;  /* IPv4 termination IPs (no port): "127.0.0.1,0.0.0.0" */
+static char *ipset_terminate_v6 = NULL;  /* IPv6 termination IPs (no port): "::1,::" */
+static char *ipset_dns_block = NULL;     /* DNS blocker servers (with port): "127.0.0.1#5353,[fd00::1]:5353" */
+static char *ipset_dns_allow = NULL;     /* Real DNS servers (with port): "8.8.8.8,1.1.1.1#5353" */
 
 #ifdef HAVE_REGEX
 /* Regex pattern cache for performance (1-2 million patterns!)
@@ -29,8 +29,6 @@ typedef struct regex_cache_entry {
   char *pattern;                /* Original regex pattern */
   pcre2_code *compiled;         /* Compiled PCRE2 regex */
   pcre2_match_data *match_data; /* Match data for PCRE2 */
-  char *ipv4;                   /* IPv4 termination address */
-  char *ipv6;                   /* IPv6 termination address */
   struct regex_cache_entry *next;
 } regex_cache_entry;
 
@@ -100,83 +98,85 @@ void db_init(void)
   printf("SQLite ENTERPRISE optimizations enabled (128 GB RAM: mmap=2GB, cache=80GB, threads=8)\n");
 
   /* ========================================================================
-   * DNS FORWARDING: Prepare statements (checked FIRST in lookup order)
+   * NEW LOOKUP ORDER (Schema v4.0):
+   * 1. block_regex      → IPSetTerminate (IPv4 + IPv6 direct response)
+   * 2. block_exact      → IPSetTerminate (IPv4 + IPv6 direct response)
+   * 3. block_wildcard   → IPSetDNSBlock (DNS Forward to blocker)
+   * 4. fqdn_dns_allow   → IPSetDNSAllow (DNS Forward to real DNS)
+   * 5. fqdn_dns_block   → IPSetDNSBlock (DNS Forward to blocker)
+   *
+   * Note: Tables now contain ONLY domains/patterns (no IPv4/IPv6 columns!)
+   *       IP addresses are stored in IPSets (config file), not database.
    * ======================================================================== */
 
-  /* Prepare statement for DNS allow (whitelist)
-   * Table: domain_dns_allow (Domain, Server)
-   * Forward specific domains to real DNS servers (bypass blocker)
-   * Example: trusted-ads.com → 8.8.8.8
+#ifdef HAVE_REGEX
+  /* Step 1: block_regex (Pattern) → IPSetTerminate
+   * PCRE2 pattern matching for complex blocking rules
+   * Example: ^ad[sz]?[0-9]*\..*$ matches ads.example.com
+   * Returns: Pattern (IPs come from IPSetTerminate config)
    */
   sqlite3_prepare(
     db,
-    "SELECT Server FROM domain_dns_allow WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
+    "SELECT Pattern FROM block_regex",
     -1,
-    &db_dns_allow,
+    &db_block_regex,
     NULL
   );
-  /* Note: Ignore error if table doesn't exist - it's optional */
+#endif
 
-  /* Prepare statement for DNS block (blacklist)
-   * Table: domain_dns_block (Domain, Server)
-   * Forward domains to blocker DNS server
-   * Example: *.xyz → 10.0.0.1 (blocker DNS)
+  /* Step 2: block_exact (Domain) → IPSetTerminate
+   * Exact domain match ONLY (no subdomains!)
+   * Example: ads.example.com blocks ads.example.com (NOT www.ads.example.com)
+   * Returns: Domain found (IPs come from IPSetTerminate config)
    */
   sqlite3_prepare(
     db,
-    "SELECT Server FROM domain_dns_block WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
+    "SELECT Domain FROM block_exact WHERE Domain = ?",
     -1,
-    &db_dns_block,
+    &db_block_exact,
     NULL
   );
-  /* Note: Ignore error if table doesn't exist - it's optional */
 
-  /* ========================================================================
-   * TERMINATION IPs: Prepare statements (return fixed IPs directly)
-   * ======================================================================== */
-
-  /* Prepare statement for exact-only matching (hosts-style)
-   * Table: domain_exact (Domain, IPv4, IPv6)
-   * Blocks ONLY the exact domain, NOT subdomains
-   * Returns IPv4 and IPv6 termination addresses
-   */
-  sqlite3_prepare(
-    db,
-    "SELECT IPv4, IPv6 FROM domain_exact WHERE Domain = ?",
-    -1,
-    &db_domain_exact,
-    NULL
-  );
-  /* Note: Ignore error if table doesn't exist - it's optional */
-
-  /* Prepare statement for wildcard matching
-   * Table: domain (Domain, IPv4, IPv6)
-   * Blocks domain AND all subdomains
-   * Returns IPv4 and IPv6 for the longest matching domain (most specific)
+  /* Step 3: block_wildcard (Domain) → IPSetDNSBlock
+   * Wildcard domain match (includes subdomains!)
+   * Example: privacy.com blocks privacy.com AND *.privacy.com
+   * Returns: Domain found (forward to IPSetDNSBlock servers)
    */
   if (sqlite3_prepare(
     db,
-    "SELECT IPv4, IPv6 FROM domain WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
+    "SELECT Domain FROM block_wildcard WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
     -1,
-    &db_domain_wildcard,
+    &db_block_wildcard,
     NULL
   ))
   {
-    fprintf(stderr, "Can't prepare wildcard statement: %s\n", sqlite3_errmsg(db));
+    fprintf(stderr, "Can't prepare block_wildcard statement: %s\n", sqlite3_errmsg(db));
     exit(1);
   }
 
-#ifdef HAVE_REGEX
-  /* Prepare statement for regex pattern matching
-   * Table: domain_regex (Pattern, IPv4, IPv6)
-   * Matches domain against regex patterns
-   * Returns IPv4 and IPv6 for the matching pattern
+  /* Step 4: fqdn_dns_allow (Domain) → IPSetDNSAllow
+   * DNS Allow (Whitelist) - Forward to real DNS servers
+   * Example: trusted.xyz → forward to 8.8.8.8 (normal resolution)
+   * Priority: Checked BEFORE fqdn_dns_block (whitelist overrides blacklist)
    */
   sqlite3_prepare(
     db,
-    "SELECT Pattern, IPv4, IPv6 FROM domain_regex",
+    "SELECT Domain FROM fqdn_dns_allow WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
     -1,
-    &db_domain_regex,
+    &db_fqdn_dns_allow,
+    NULL
+  );
+
+  /* Step 5: fqdn_dns_block (Domain) → IPSetDNSBlock
+   * DNS Block (Blacklist) - Forward to blocker DNS servers
+   * Example: *.xyz → forward to 127.0.0.1#5353 (blocker returns 0.0.0.0)
+   * Priority: Checked AFTER fqdn_dns_allow (step 5 after step 4)
+   */
+  sqlite3_prepare(
+    db,
+    "SELECT Domain FROM fqdn_dns_block WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
+    -1,
+    &db_fqdn_dns_block,
     NULL
   );
   /* Note: Ignore error if table doesn't exist - it's optional */
@@ -191,39 +191,38 @@ void db_cleanup(void)
 {
   printf("cleaning up database...\n");
 
-  if (db_dns_allow)
-  {
-    sqlite3_finalize(db_dns_allow);
-    db_dns_allow = NULL;
-  }
-
-  if (db_dns_block)
-  {
-    sqlite3_finalize(db_dns_block);
-    db_dns_block = NULL;
-  }
-
-  if (db_domain_exact)
-  {
-    sqlite3_finalize(db_domain_exact);
-    db_domain_exact = NULL;
-  }
-
-  if (db_domain_wildcard)
-  {
-    sqlite3_finalize(db_domain_wildcard);
-    db_domain_wildcard = NULL;
-  }
-
 #ifdef HAVE_REGEX
-  if (db_domain_regex)
+  if (db_block_regex)
   {
-    sqlite3_finalize(db_domain_regex);
-    db_domain_regex = NULL;
+    sqlite3_finalize(db_block_regex);
+    db_block_regex = NULL;
   }
-
   free_regex_cache();
 #endif
+
+  if (db_block_exact)
+  {
+    sqlite3_finalize(db_block_exact);
+    db_block_exact = NULL;
+  }
+
+  if (db_block_wildcard)
+  {
+    sqlite3_finalize(db_block_wildcard);
+    db_block_wildcard = NULL;
+  }
+
+  if (db_fqdn_dns_allow)
+  {
+    sqlite3_finalize(db_fqdn_dns_allow);
+    db_fqdn_dns_allow = NULL;
+  }
+
+  if (db_fqdn_dns_block)
+  {
+    sqlite3_finalize(db_fqdn_dns_block);
+    db_fqdn_dns_block = NULL;
+  }
 
   if (db)
   {
@@ -462,45 +461,59 @@ int db_check_block(const char *name)
   return db_get_block_ips(name, NULL, NULL);
 }
 
-/* Set IPv4 termination address for blocked domains */
-void db_set_block_ipv4(struct in_addr *addr)
-{
-  if (addr)
-    {
-      db_block_ipv4 = *addr;
-      db_has_ipv4 = 1;
+/* ============================================================================
+ * IPSet Configuration Setters (called from option.c)
+ * ========================================================================== */
 
-      char ip_str[INET_ADDRSTRLEN];
-      inet_ntop(AF_INET, addr, ip_str, sizeof(ip_str));
-      printf("SQLite blocker: IPv4 termination set to %s\n", ip_str);
-    }
+/* Set IPv4 termination addresses (comma-separated, no port)
+ * Example: "127.0.0.1,0.0.0.0" */
+void db_set_ipset_terminate_v4(char *addresses)
+{
+  if (ipset_terminate_v4)
+    free(ipset_terminate_v4);
+  ipset_terminate_v4 = addresses;
+  if (addresses)
+    printf("SQLite IPSet: Terminate IPv4 set to: %s\n", addresses);
 }
 
-/* Set IPv6 termination address for blocked domains */
-void db_set_block_ipv6(struct in6_addr *addr)
+/* Set IPv6 termination addresses (comma-separated, no port)
+ * Example: "::1,::" */
+void db_set_ipset_terminate_v6(char *addresses)
 {
-  if (addr)
-    {
-      db_block_ipv6 = *addr;
-      db_has_ipv6 = 1;
-
-      char ip_str[INET6_ADDRSTRLEN];
-      inet_ntop(AF_INET6, addr, ip_str, sizeof(ip_str));
-      printf("SQLite blocker: IPv6 termination set to %s\n", ip_str);
-    }
+  if (ipset_terminate_v6)
+    free(ipset_terminate_v6);
+  ipset_terminate_v6 = addresses;
+  if (addresses)
+    printf("SQLite IPSet: Terminate IPv6 set to: %s\n", addresses);
 }
 
-/* Get IPv4 termination address (returns NULL if not set) */
-struct in_addr *db_get_block_ipv4(void)
+/* Set DNS blocker servers (comma-separated, with port)
+ * Example: "127.0.0.1#5353,[fd00::1]:5353" */
+void db_set_ipset_dns_block(char *servers)
 {
-  return db_has_ipv4 ? &db_block_ipv4 : NULL;
+  if (ipset_dns_block)
+    free(ipset_dns_block);
+  ipset_dns_block = servers;
+  if (servers)
+    printf("SQLite IPSet: DNS Block set to: %s\n", servers);
 }
 
-/* Get IPv6 termination address (returns NULL if not set) */
-struct in6_addr *db_get_block_ipv6(void)
+/* Set real DNS servers (comma-separated, with port)
+ * Example: "8.8.8.8,1.1.1.1#5353,[2001:4860:4860::8888]:53" */
+void db_set_ipset_dns_allow(char *servers)
 {
-  return db_has_ipv6 ? &db_block_ipv6 : NULL;
+  if (ipset_dns_allow)
+    free(ipset_dns_allow);
+  ipset_dns_allow = servers;
+  if (servers)
+    printf("SQLite IPSet: DNS Allow set to: %s\n", servers);
 }
+
+/* Get IPSet configuration strings (for use in lookup logic) */
+char *db_get_ipset_terminate_v4(void) { return ipset_terminate_v4; }
+char *db_get_ipset_terminate_v6(void) { return ipset_terminate_v6; }
+char *db_get_ipset_dns_block(void) { return ipset_dns_block; }
+char *db_get_ipset_dns_allow(void) { return ipset_dns_allow; }
 
 #ifdef HAVE_REGEX
 /* Load all regex patterns from database into cache
@@ -509,20 +522,18 @@ struct in6_addr *db_get_block_ipv6(void)
  */
 static void load_regex_cache(void)
 {
-  if (regex_cache_loaded || !db || !db_domain_regex)
+  if (regex_cache_loaded || !db || !db_block_regex)
     return;
 
   printf("Loading regex patterns from database...\n");
   int loaded = 0;
   int failed = 0;
 
-  sqlite3_reset(db_domain_regex);
+  sqlite3_reset(db_block_regex);
 
-  while (sqlite3_step(db_domain_regex) == SQLITE_ROW)
+  while (sqlite3_step(db_block_regex) == SQLITE_ROW)
   {
-    const unsigned char *pattern_text = sqlite3_column_text(db_domain_regex, 0);
-    const unsigned char *ipv4_text = sqlite3_column_text(db_domain_regex, 1);
-    const unsigned char *ipv6_text = sqlite3_column_text(db_domain_regex, 2);
+    const unsigned char *pattern_text = sqlite3_column_text(db_block_regex, 0);
 
     if (!pattern_text)
       continue;
@@ -559,7 +570,7 @@ static void load_regex_cache(void)
       continue;
     }
 
-    /* Add to cache */
+    /* Add to cache (IPs come from IPSetTerminate, not database!) */
     regex_cache_entry *entry = malloc(sizeof(regex_cache_entry));
     if (!entry)
     {
@@ -572,8 +583,6 @@ static void load_regex_cache(void)
     entry->pattern = strdup((const char *)pattern_text);
     entry->compiled = compiled;
     entry->match_data = match_data;
-    entry->ipv4 = ipv4_text ? strdup((const char *)ipv4_text) : NULL;
-    entry->ipv6 = ipv6_text ? strdup((const char *)ipv6_text) : NULL;
     entry->next = regex_cache;
     regex_cache = entry;
 

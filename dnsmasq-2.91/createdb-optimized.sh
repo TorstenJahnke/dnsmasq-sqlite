@@ -39,95 +39,113 @@ echo ""
 # Create database with optimized schema
 sqlite3 "$DB_FILE" <<'EOF'
 -- ============================================================================
--- OPTIMIZED SCHEMA for dnsmasq SQLite blocker + DNS forwarding
+-- NEW SCHEMA v4.0: IPSet-based DNS Blocking + Forwarding (128 GB RAM optimized)
 -- Performance: 2-3x faster than basic schema
--- Requires: SQLite 3.47+ for best performance (Bloom filters)
+-- Requires: SQLite 3.37+ for PRAGMA threads, 3.47+ for best performance
 -- ============================================================================
 
 -- ============================================================================
--- DNS FORWARDING TABLES (checked FIRST in lookup order)
+-- LOOKUP ORDER (sequential):
+-- 1. block_regex      → IPSetTerminate (IPv4 + IPv6 direct response)
+-- 2. block_exact      → IPSetTerminate (IPv4 + IPv6 direct response)
+-- 3. block_wildcard   → IPSetDNSBlock (DNS Forward to blocker)
+-- 4. fqdn_dns_allow   → IPSetDNSAllow (DNS Forward to real DNS)
+-- 5. fqdn_dns_block   → IPSetDNSBlock (DNS Forward to blocker)
+-- ============================================================================
+
+-- ============================================================================
+-- IPSET CONFIGURATION (in dnsmasq.conf, NOT in database):
+--
+-- IPSetTerminate: Direct IP responses (no port notation)
+--   ipset-terminate-v4=127.0.0.1,0.0.0.0
+--   ipset-terminate-v6=::1,::
+--
+-- IPSetDNSBlock: DNS servers that return 0.0.0.0 (with port)
+--   ipset-dns-block=127.0.0.1#5353,[fd00::1]:5353
+--
+-- IPSetDNSAllow: Real DNS servers (with port)
+--   ipset-dns-allow=8.8.8.8,1.1.1.1#5353,[2001:4860:4860::8888]:53
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- Table 1: DNS Allow (Whitelist) - Exact Match
--- Forward specific domains to real DNS servers (bypasses blocking)
--- Example: trusted-ads.com → 8.8.8.8 (allow this ad domain)
+-- Table 1: block_regex - PCRE2 Pattern Matching
+-- Pattern matched → return IPSetTerminate (IPv4 + IPv6)
+-- Example: ^ad[sz]?[0-9]*\..*$ matches ads.example.com
+-- Use Case: Block complex patterns like ad servers
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS domain_dns_allow (
-    Domain TEXT PRIMARY KEY,
-    Server TEXT NOT NULL  -- DNS server: "8.8.8.8" or "1.1.1.1#5353" (with port)
+CREATE TABLE IF NOT EXISTS block_regex (
+    Pattern TEXT PRIMARY KEY
 ) WITHOUT ROWID;
 
--- Covering Index for allow table
-CREATE INDEX IF NOT EXISTS idx_dns_allow_covering
-ON domain_dns_allow(Domain, Server);
+-- Covering Index (optimized for index-only scans)
+CREATE INDEX IF NOT EXISTS idx_block_regex_covering
+ON block_regex(Pattern);
 
 -- ----------------------------------------------------------------------------
--- Table 2: DNS Block (Blacklist) - Wildcard Match
--- Forward domains to blocker DNS server (e.g., internal DNS that returns 0.0.0.0)
--- Example: *.xyz → 10.0.0.1 (block all .xyz domains via blocker DNS)
+-- Table 2: block_exact - Exact Domain Match (no subdomains!)
+-- Domain matched → return IPSetTerminate (IPv4 + IPv6)
+-- Example: ads.example.com blocks ONLY ads.example.com (NOT www.ads.example.com)
+-- Use Case: Block specific domains without affecting subdomains
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS domain_dns_block (
-    Domain TEXT PRIMARY KEY,
-    Server TEXT NOT NULL  -- Blocker DNS server: "10.0.0.1"
+CREATE TABLE IF NOT EXISTS block_exact (
+    Domain TEXT PRIMARY KEY
 ) WITHOUT ROWID;
 
--- Covering Index for block table
-CREATE INDEX IF NOT EXISTS idx_dns_block_covering
-ON domain_dns_block(Domain, Server);
+-- Covering Index (optimized for exact match lookups)
+CREATE INDEX IF NOT EXISTS idx_block_exact_covering
+ON block_exact(Domain);
+
+-- ----------------------------------------------------------------------------
+-- Table 3: block_wildcard - Wildcard Domain Match (includes subdomains!)
+-- Domain matched → forward to IPSetDNSBlock
+-- Example: privacy.com blocks privacy.com AND *.privacy.com
+-- Use Case: Block domains and all subdomains via DNS forwarding
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS block_wildcard (
+    Domain TEXT PRIMARY KEY
+) WITHOUT ROWID;
+
+-- Covering Index
+CREATE INDEX IF NOT EXISTS idx_block_wildcard_covering
+ON block_wildcard(Domain);
+
+-- Index for LIKE queries (wildcard matching: '%.' || Domain)
+CREATE INDEX IF NOT EXISTS idx_block_wildcard_like
+ON block_wildcard(Domain COLLATE RTRIM);
+
+-- ----------------------------------------------------------------------------
+-- Table 4: fqdn_dns_allow - DNS Allow (Whitelist)
+-- Domain matched → forward to IPSetDNSAllow (real DNS like 8.8.8.8)
+-- Example: trusted.xyz → forward to 8.8.8.8 (normal resolution)
+-- Use Case: Block *.xyz (in fqdn_dns_block), but allow trusted.xyz
+-- Priority: Checked BEFORE fqdn_dns_block (step 4 before step 5)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS fqdn_dns_allow (
+    Domain TEXT PRIMARY KEY
+) WITHOUT ROWID;
+
+-- Covering Index
+CREATE INDEX IF NOT EXISTS idx_fqdn_dns_allow_covering
+ON fqdn_dns_allow(Domain);
+
+-- ----------------------------------------------------------------------------
+-- Table 5: fqdn_dns_block - DNS Block (Blacklist)
+-- Domain matched → forward to IPSetDNSBlock (blocker DNS like 127.0.0.1#5353)
+-- Example: *.xyz → forward to 127.0.0.1#5353 (blocker returns 0.0.0.0)
+-- Use Case: Block entire TLDs or domain patterns via DNS forwarding
+-- Priority: Checked AFTER fqdn_dns_allow (step 5 after step 4)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS fqdn_dns_block (
+    Domain TEXT PRIMARY KEY
+) WITHOUT ROWID;
+
+-- Covering Index
+CREATE INDEX IF NOT EXISTS idx_fqdn_dns_block_covering
+ON fqdn_dns_block(Domain);
 
 -- Index for LIKE queries (wildcard matching)
-CREATE INDEX IF NOT EXISTS idx_dns_block_wildcard
-ON domain_dns_block(Domain COLLATE RTRIM);
-
--- ============================================================================
--- TERMINATION TABLES (return fixed IPs directly)
--- ============================================================================
-
--- ----------------------------------------------------------------------------
--- Table 3: Exact Match (no subdomains)
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS domain_exact (
-    Domain TEXT PRIMARY KEY,
-    IPv4 TEXT,
-    IPv6 TEXT
-) WITHOUT ROWID;
-
--- Covering Index: Includes all columns needed for query
--- Benefit: No table lookup needed = 2x faster
-CREATE INDEX IF NOT EXISTS idx_domain_exact_covering
-ON domain_exact(Domain, IPv4, IPv6);
-
--- ----------------------------------------------------------------------------
--- Table 2: Wildcard Match (domain + subdomains)
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS domain (
-    Domain TEXT PRIMARY KEY,
-    IPv4 TEXT,
-    IPv6 TEXT
-) WITHOUT ROWID;
-
--- Covering Index for wildcard queries
-CREATE INDEX IF NOT EXISTS idx_domain_covering
-ON domain(Domain, IPv4, IPv6);
-
--- Index for LIKE queries (wildcard matching)
--- Benefit: Faster '%.' || Domain LIKE queries
-CREATE INDEX IF NOT EXISTS idx_domain_reverse
-ON domain(Domain COLLATE RTRIM);
-
--- ----------------------------------------------------------------------------
--- Table 3: Regex Patterns (PCRE2)
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS domain_regex (
-    Pattern TEXT PRIMARY KEY,
-    IPv4 TEXT,
-    IPv6 TEXT
-) WITHOUT ROWID;
-
--- Covering Index for regex table
-CREATE INDEX IF NOT EXISTS idx_regex_covering
-ON domain_regex(Pattern, IPv4, IPv6);
+CREATE INDEX IF NOT EXISTS idx_fqdn_dns_block_like
+ON fqdn_dns_block(Domain COLLATE RTRIM);
 
 -- ============================================================================
 -- PERFORMANCE PRAGMAS (Optimized for 128 GB RAM Server)
@@ -183,14 +201,17 @@ CREATE TABLE IF NOT EXISTS db_metadata (
 ) WITHOUT ROWID;
 
 INSERT OR REPLACE INTO db_metadata (key, value) VALUES
-    ('schema_version', '3.1'),
+    ('schema_version', '4.0'),
     ('created', datetime('now')),
     ('optimized', 'enterprise-128gb'),
     ('hardware', '8-core-128gb-ram'),
     ('cache_size_gb', '80'),
     ('mmap_size_gb', '2'),
     ('max_domains', '1000000000'),
-    ('features', 'without_rowid,covering_indexes,mmap,wal,dns_forwarding,threads-8');
+    ('features', 'without_rowid,covering_indexes,mmap,wal,dns_forwarding,threads-8,ipsets'),
+    ('ipsets', 'IPSetTerminate,IPSetDNSBlock,IPSetDNSAllow'),
+    ('lookup_order', '1:block_regex,2:block_exact,3:block_wildcard,4:fqdn_dns_allow,5:fqdn_dns_block'),
+    ('ipv6_first', 'true');
 
 EOF
 
@@ -218,6 +239,7 @@ PRAGMA synchronous;
 PRAGMA mmap_size;
 PRAGMA cache_size;
 PRAGMA page_size;
+PRAGMA threads;
 EOF
 
     echo ""
@@ -227,6 +249,15 @@ EOF
     sqlite3 "$DB_FILE" <<EOF
 .mode list
 SELECT name FROM sqlite_master WHERE type='index' ORDER BY name;
+EOF
+
+    echo ""
+
+    # Show tables
+    echo "Tables created:"
+    sqlite3 "$DB_FILE" <<EOF
+.mode list
+SELECT name FROM sqlite_master WHERE type='table' AND name != 'db_metadata' ORDER BY name;
 EOF
 
     echo ""
@@ -252,6 +283,25 @@ EOF
     echo "  • Memory:                94% less"
     echo "  • Query time:            100x faster"
     echo "  • Startup time:          60x faster"
+    echo ""
+    echo "========================================="
+    echo "IPSet Configuration Required"
+    echo "========================================="
+    echo ""
+    echo "Add to dnsmasq.conf:"
+    echo ""
+    echo "# Termination IPs (direct responses, no port)"
+    echo "ipset-terminate-v4=127.0.0.1,0.0.0.0"
+    echo "ipset-terminate-v6=::1,::"
+    echo ""
+    echo "# DNS Blocker (returns 0.0.0.0, with port)"
+    echo "ipset-dns-block=127.0.0.1#5353,[fd00::1]:5353"
+    echo ""
+    echo "# Real DNS Servers (normal resolution, with port)"
+    echo "ipset-dns-allow=8.8.8.8,1.1.1.1#5353,[2001:4860:4860::8888]:53"
+    echo ""
+    echo "# Database reference"
+    echo "db-file=/var/db/dnsmasq/blocklist.db"
     echo ""
     echo "Ready to import data!"
     echo ""

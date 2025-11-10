@@ -1934,8 +1934,14 @@ void db_cleanup(void);
 char *db_get_forward_server(const char *domain);  /* DNS forwarding (returns server or NULL) */
 int db_check_block(const char *domain);
 int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
-void db_set_block_ipv4(struct in_addr *addr);
-void db_set_block_ipv6(struct in6_addr *addr);
-struct in_addr *db_get_block_ipv4(void);
-struct in6_addr *db_get_block_ipv6(void);
+
+/* IPSet configuration setters/getters */
+void db_set_ipset_terminate_v4(char *addresses);
+void db_set_ipset_terminate_v6(char *addresses);
+void db_set_ipset_dns_block(char *servers);
+void db_set_ipset_dns_allow(char *servers);
+char *db_get_ipset_terminate_v4(void);
+char *db_get_ipset_terminate_v6(void);
+char *db_get_ipset_dns_block(void);
+char *db_get_ipset_dns_allow(void);
 #endif 
