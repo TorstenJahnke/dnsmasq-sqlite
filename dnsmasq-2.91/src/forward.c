@@ -26,6 +26,7 @@ static int tcp_key_recurse(time_t now, int status, struct dns_header *header, si
 static unsigned short get_id(void);
 static void free_frec(struct frec *f);
 static void query_full(time_t now, char *domain);
+static int find_server_by_address(const char *server_str, int *first_out, int *last_out);
 
 /* Send a UDP packet with its source address set as "source" 
    unless nowild is true, when we just send it with the kernel default */
@@ -160,6 +161,84 @@ static int domain_no_rebind(char *domain)
 	return 1;
     }
   
+  return 0;
+}
+
+/* SQLite DNS Forwarding: Find server(s) in daemon->serverarray matching the given IP address string.
+   Returns 1 if found, 0 otherwise. Sets first_out and last_out to the server index. */
+static int find_server_by_address(const char *server_str, int *first_out, int *last_out)
+{
+  union mysockaddr target_addr;
+  int port = NAMESERVER_PORT;
+  char *server_copy, *port_str;
+  int i;
+
+  if (!server_str || daemon->serverarraysz == 0)
+    return 0;
+
+  /* Parse server string: "8.8.8.8" or "8.8.8.8#5353" */
+  server_copy = strdup(server_str);
+  if (!server_copy)
+    return 0;
+
+  /* Check for port specification */
+  if ((port_str = strchr(server_copy, '#')))
+    {
+      *port_str = '\0';
+      port_str++;
+      port = atoi(port_str);
+    }
+
+  /* Parse IP address */
+  memset(&target_addr, 0, sizeof(target_addr));
+
+  /* Try IPv4 */
+  if (inet_pton(AF_INET, server_copy, &target_addr.in.sin_addr) > 0)
+    {
+      target_addr.sa.sa_family = AF_INET;
+      target_addr.in.sin_port = htons(port);
+    }
+  /* Try IPv6 */
+  else if (inet_pton(AF_INET6, server_copy, &target_addr.in6.sin6_addr) > 0)
+    {
+      target_addr.sa.sa_family = AF_INET6;
+      target_addr.in6.sin6_port = htons(port);
+    }
+  else
+    {
+      free(server_copy);
+      return 0;
+    }
+
+  free(server_copy);
+
+  /* Search for matching server in serverarray */
+  for (i = 0; i < daemon->serverarraysz; i++)
+    {
+      struct server *srv = daemon->serverarray[i];
+
+      /* Check if address matches */
+      if (srv->addr.sa.sa_family == target_addr.sa.sa_family)
+        {
+          if (target_addr.sa.sa_family == AF_INET &&
+              srv->addr.in.sin_addr.s_addr == target_addr.in.sin_addr.s_addr &&
+              srv->addr.in.sin_port == target_addr.in.sin_port)
+            {
+              *first_out = i;
+              *last_out = i;
+              return 1;
+            }
+          else if (target_addr.sa.sa_family == AF_INET6 &&
+                   memcmp(&srv->addr.in6.sin6_addr, &target_addr.in6.sin6_addr, sizeof(struct in6_addr)) == 0 &&
+                   srv->addr.in6.sin6_port == target_addr.in6.sin6_port)
+            {
+              *first_out = i;
+              *last_out = i;
+              return 1;
+            }
+        }
+    }
+
   return 0;
 }
 
@@ -344,10 +423,33 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
 	  ede = EDE_INVALID_DATA;
 	  goto reply;
 	}
-      
-      if (lookup_domain(daemon->namebuff, gotname, &first, &last))
+
+      /* SQLite DNS Forwarding: Check domain_dns_allow and domain_dns_block tables */
+      char *forward_server = db_get_forward_server(daemon->namebuff);
+      int sqlite_forwarding = 0;
+
+      if (forward_server)
+	{
+	  /* Found forwarding rule: find the server in serverarray */
+	  if (find_server_by_address(forward_server, &first, &last))
+	    {
+	      /* Server found - use it for forwarding */
+	      sqlite_forwarding = 1;
+	      flags = 0; /* Clear flags to allow forwarding */
+	    }
+	  else
+	    {
+	      /* Server not found in config - log warning and fall back to normal lookup */
+	      my_syslog(LOG_WARNING, _("SQLite forwarding: server %s not found for %s"),
+			forward_server, daemon->namebuff);
+	    }
+	  free(forward_server);
+	}
+
+      /* If no SQLite forwarding rule found, use normal domain lookup */
+      if (!sqlite_forwarding && lookup_domain(daemon->namebuff, gotname, &first, &last))
 	flags = is_local_answer(now, first, daemon->namebuff);
-      else
+      else if (!sqlite_forwarding)
 	{
 	  /* no available server. */
 	  ede = EDE_NOT_READY;

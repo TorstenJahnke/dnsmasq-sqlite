@@ -2,14 +2,31 @@
 
 Diese Version von dnsmasq enthält eine SQLite-Integration, die es ermöglicht, DNS-Anfragen dynamisch zu blockieren.
 
-## 🎯 Funktionsweise (DNS-Blocker)
+## 🎯 Funktionsweise
 
+### Lookup-Reihenfolge
+1. **DNS Forwarding** (domain_dns_allow / domain_dns_block) → Forwarde an spezifischen DNS-Server
+2. **Termination** (domain_exact / domain / domain_regex) → Returniere Termination-IP
+3. **Normal Upstream** → Forwarde an Standard DNS-Server
+
+### DNS-Blocker Modi
 - **Domain IN Datenbank** → wird blockiert (NXDOMAIN oder Terminierungs-IP)
 - **Domain NICHT in Datenbank** → normale Weiterleitung an DNS-Forwarder
 
 ## ✨ Features
 
-### ⚡ Drei Matching-Modi
+### 🔀 DNS Forwarding (NEU!)
+**Forwarde spezifische Domains an bestimmte DNS-Server:**
+1. **Whitelist** (`domain_dns_allow`): Forwarde zu echtem DNS (z.B. 8.8.8.8)
+2. **Blacklist** (`domain_dns_block`): Forwarde zu Blocker-DNS (z.B. 10.0.0.1)
+
+**Use Case:** Blocke alle .xyz Domains, aber erlaube 1000 Exceptions!
+- `*.xyz` → 10.0.0.1 (Blocker-DNS returns 0.0.0.0)
+- `trusted.xyz` → 8.8.8.8 (Real DNS)
+
+Siehe [README-DNS-FORWARDING.md](README-DNS-FORWARDING.md) für Details.
+
+### ⚡ Drei Matching-Modi (Termination)
 1. **Exact-only** (`domain_exact` Tabelle): Blockt NUR die exakte Domain (wie hosts-Datei)
 2. **Wildcard** (`domain` Tabelle): Blockt Domain + alle Subdomains (empfohlen!)
 3. **Regex** (`domain_regex` Tabelle): Blockt mit PCRE-Patterns (mächtig aber langsam!)
