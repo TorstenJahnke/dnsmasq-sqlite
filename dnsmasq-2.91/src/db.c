@@ -10,13 +10,27 @@ static sqlite3 *db = NULL;
 static sqlite3_stmt *db_domain_exact = NULL;     /* For exact-only matching (hosts-style) */
 static sqlite3_stmt *db_domain_wildcard = NULL;  /* For wildcard matching (*.domain) */
 static sqlite3_stmt *db_domain_regex = NULL;     /* For regex pattern matching */
+
+/* Schema v4.0: New prepared statements for IPSet-based lookups */
+static sqlite3_stmt *stmt_block_regex = NULL;
+static sqlite3_stmt *stmt_block_exact = NULL;
+static sqlite3_stmt *stmt_block_wildcard = NULL;
+static sqlite3_stmt *stmt_fqdn_dns_allow = NULL;
+static sqlite3_stmt *stmt_fqdn_dns_block = NULL;
+
 static char *db_file = NULL;
 
-/* Termination addresses for blocked domains */
+/* Termination addresses for blocked domains (legacy, deprecated) */
 static struct in_addr db_block_ipv4;
 static struct in6_addr db_block_ipv6;
 static int db_has_ipv4 = 0;
 static int db_has_ipv6 = 0;
+
+/* IPSet types for lookup results */
+#define IPSET_TYPE_NONE       0
+#define IPSET_TYPE_TERMINATE  1
+#define IPSET_TYPE_DNS_BLOCK  2
+#define IPSET_TYPE_DNS_ALLOW  3
 
 #ifdef HAVE_REGEX
 /* Regex pattern cache for performance (1-2 million patterns!)
@@ -102,10 +116,62 @@ void db_init(void)
     NULL
   );
   /* Note: Ignore error if table doesn't exist - it's optional */
+#endif
 
-  printf("SQLite blocker ready: exact + wildcard + regex (per-domain termination IPs)\n");
-#else
-  printf("SQLite blocker ready: exact-match + wildcard support (per-domain termination IPs)\n");
+  /* Schema v4.0: Prepare statements for IPSet-based lookups
+   * These tables have NO IPv4/IPv6 columns - they return IPSet type only
+   */
+
+  /* block_regex: Regex patterns → IPSET_TERMINATE */
+#ifdef HAVE_REGEX
+  sqlite3_prepare(
+    db,
+    "SELECT Pattern FROM block_regex",
+    -1,
+    &stmt_block_regex,
+    NULL
+  );
+#endif
+
+  /* block_exact: Exact domain matches → IPSET_TERMINATE */
+  sqlite3_prepare(
+    db,
+    "SELECT Domain FROM block_exact WHERE Domain = ?",
+    -1,
+    &stmt_block_exact,
+    NULL
+  );
+
+  /* block_wildcard: Wildcard domain matches → IPSET_DNS_BLOCK */
+  sqlite3_prepare(
+    db,
+    "SELECT Domain FROM block_wildcard WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
+    -1,
+    &stmt_block_wildcard,
+    NULL
+  );
+
+  /* fqdn_dns_allow: Allow-list → IPSET_DNS_ALLOW */
+  sqlite3_prepare(
+    db,
+    "SELECT Domain FROM fqdn_dns_allow WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
+    -1,
+    &stmt_fqdn_dns_allow,
+    NULL
+  );
+
+  /* fqdn_dns_block: Block-list → IPSET_DNS_BLOCK */
+  sqlite3_prepare(
+    db,
+    "SELECT Domain FROM fqdn_dns_block WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
+    -1,
+    &stmt_fqdn_dns_block,
+    NULL
+  );
+
+  printf("SQLite blocker ready: Schema v4.0 with IPSet support\n");
+#ifdef HAVE_REGEX
+  printf("  - Regex support enabled\n");
 #endif
 }
 
@@ -341,20 +407,24 @@ struct in6_addr *db_get_block_ipv6(void)
  */
 static void load_regex_cache(void)
 {
-  if (regex_cache_loaded || !db || !db_domain_regex)
+  /* Schema v4.0: Load from block_regex table (no IPv4/IPv6 columns) */
+  sqlite3_stmt *source = stmt_block_regex ? stmt_block_regex : db_domain_regex;
+
+  if (regex_cache_loaded || !db || !source)
     return;
 
   printf("Loading regex patterns from database...\n");
   int loaded = 0;
   int failed = 0;
 
-  sqlite3_reset(db_domain_regex);
+  sqlite3_reset(source);
 
-  while (sqlite3_step(db_domain_regex) == SQLITE_ROW)
+  while (sqlite3_step(source) == SQLITE_ROW)
   {
-    const unsigned char *pattern_text = sqlite3_column_text(db_domain_regex, 0);
-    const unsigned char *ipv4_text = sqlite3_column_text(db_domain_regex, 1);
-    const unsigned char *ipv6_text = sqlite3_column_text(db_domain_regex, 2);
+    const unsigned char *pattern_text = sqlite3_column_text(source, 0);
+    /* Schema v4.0: No IPv4/IPv6 columns in block_regex */
+    const unsigned char *ipv4_text = (source == db_domain_regex) ? sqlite3_column_text(source, 1) : NULL;
+    const unsigned char *ipv6_text = (source == db_domain_regex) ? sqlite3_column_text(source, 2) : NULL;
 
     if (!pattern_text)
       continue;
@@ -458,5 +528,146 @@ static void free_regex_cache(void)
     printf("Freed %d regex patterns from cache\n", freed);
 }
 #endif
+
+/* Schema v4.0: New lookup function with 5-step priority
+ * Returns IPSET_TYPE based on lookup result:
+ *   1. block_regex     → IPSET_TERMINATE
+ *   2. block_exact     → IPSET_TERMINATE
+ *   3. block_wildcard  → IPSET_DNS_BLOCK
+ *   4. fqdn_dns_allow  → IPSET_DNS_ALLOW
+ *   5. fqdn_dns_block  → IPSET_DNS_BLOCK
+ *   No match          → IPSET_TYPE_NONE (use default DNS)
+ */
+int db_lookup_domain(const char *name)
+{
+  db_init();
+
+  if (!db)
+    return IPSET_TYPE_NONE;  /* No DB → use default DNS */
+
+  /* Step 1: Check block_regex (HIGHEST priority!) */
+#ifdef HAVE_REGEX
+  if (stmt_block_regex)
+  {
+    /* Load regex patterns into cache on first use */
+    if (!regex_cache_loaded)
+      load_regex_cache();
+
+    /* Iterate through cached regex patterns */
+    regex_cache_entry *entry = regex_cache;
+    while (entry)
+    {
+      int rc = pcre2_match(
+        entry->compiled,
+        (PCRE2_SPTR)name,
+        strlen(name),
+        0,
+        0,
+        entry->match_data,
+        NULL
+      );
+
+      if (rc >= 0)  /* Match found! */
+      {
+        printf("db_lookup: %s matched regex '%s' → TERMINATE\n", name, entry->pattern);
+        return IPSET_TYPE_TERMINATE;
+      }
+
+      entry = entry->next;
+    }
+  }
+#endif
+
+  /* Step 2: Check block_exact */
+  if (stmt_block_exact)
+  {
+    sqlite3_reset(stmt_block_exact);
+    if (sqlite3_bind_text(stmt_block_exact, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    {
+      if (sqlite3_step(stmt_block_exact) == SQLITE_ROW)
+      {
+        printf("db_lookup: %s in block_exact → TERMINATE\n", name);
+        return IPSET_TYPE_TERMINATE;
+      }
+    }
+  }
+
+  /* Step 3: Check block_wildcard */
+  if (stmt_block_wildcard)
+  {
+    sqlite3_reset(stmt_block_wildcard);
+    if (sqlite3_bind_text(stmt_block_wildcard, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(stmt_block_wildcard, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    {
+      if (sqlite3_step(stmt_block_wildcard) == SQLITE_ROW)
+      {
+        const unsigned char *matched_domain = sqlite3_column_text(stmt_block_wildcard, 0);
+        printf("db_lookup: %s matched block_wildcard '%s' → DNS_BLOCK\n", name,
+               matched_domain ? (const char *)matched_domain : "?");
+        return IPSET_TYPE_DNS_BLOCK;
+      }
+    }
+  }
+
+  /* Step 4: Check fqdn_dns_allow */
+  if (stmt_fqdn_dns_allow)
+  {
+    sqlite3_reset(stmt_fqdn_dns_allow);
+    if (sqlite3_bind_text(stmt_fqdn_dns_allow, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(stmt_fqdn_dns_allow, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    {
+      if (sqlite3_step(stmt_fqdn_dns_allow) == SQLITE_ROW)
+      {
+        const unsigned char *matched_domain = sqlite3_column_text(stmt_fqdn_dns_allow, 0);
+        printf("db_lookup: %s matched fqdn_dns_allow '%s' → DNS_ALLOW\n", name,
+               matched_domain ? (const char *)matched_domain : "?");
+        return IPSET_TYPE_DNS_ALLOW;
+      }
+    }
+  }
+
+  /* Step 5: Check fqdn_dns_block */
+  if (stmt_fqdn_dns_block)
+  {
+    sqlite3_reset(stmt_fqdn_dns_block);
+    if (sqlite3_bind_text(stmt_fqdn_dns_block, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(stmt_fqdn_dns_block, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    {
+      if (sqlite3_step(stmt_fqdn_dns_block) == SQLITE_ROW)
+      {
+        const unsigned char *matched_domain = sqlite3_column_text(stmt_fqdn_dns_block, 0);
+        printf("db_lookup: %s matched fqdn_dns_block '%s' → DNS_BLOCK\n", name,
+               matched_domain ? (const char *)matched_domain : "?");
+        return IPSET_TYPE_DNS_BLOCK;
+      }
+    }
+  }
+
+  /* No match → use default forward DNS */
+  return IPSET_TYPE_NONE;
+}
+
+/* Get IPSet configuration based on type and query type
+ * Returns pointer to ipset_config from daemon structure
+ */
+struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6)
+{
+  extern struct daemon *daemon;
+
+  switch (ipset_type)
+  {
+    case IPSET_TYPE_TERMINATE:
+      return is_ipv6 ? &daemon->ipset_terminate_v6 : &daemon->ipset_terminate_v4;
+
+    case IPSET_TYPE_DNS_BLOCK:
+      return &daemon->ipset_dns_block;
+
+    case IPSET_TYPE_DNS_ALLOW:
+      return &daemon->ipset_dns_allow;
+
+    default:
+      return NULL;
+  }
+}
 
 #endif

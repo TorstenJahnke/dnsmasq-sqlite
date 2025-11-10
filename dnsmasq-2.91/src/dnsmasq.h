@@ -649,6 +649,11 @@ struct allowlist {
   struct allowlist *next;
 };
 
+struct ipset_config {
+  union mysockaddr servers[3];  /* Up to 3 servers/IPs */
+  int count;                     /* Number of configured entries */
+};
+
 struct irec {
   union mysockaddr addr;
   struct in_addr netmask; /* only valid for IPv4 */
@@ -1183,6 +1188,10 @@ extern struct daemon {
   int server_has_wildcard;
   int serverarraysz, serverarrayhwm;
   struct ipsets *ipsets, *nftsets;
+  struct ipset_config ipset_terminate_v4;
+  struct ipset_config ipset_terminate_v6;
+  struct ipset_config ipset_dns_block;
+  struct ipset_config ipset_dns_allow;
   u32 allowlist_mask;
   struct allowlist *allowlists;
   int log_fac; /* log facility */
@@ -1937,4 +1946,7 @@ void db_set_block_ipv4(struct in_addr *addr);
 void db_set_block_ipv6(struct in6_addr *addr);
 struct in_addr *db_get_block_ipv4(void);
 struct in6_addr *db_get_block_ipv6(void);
+/* Schema v4.0: New IPSet-based lookup functions */
+int db_lookup_domain(const char *name);
+struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6);
 #endif 
