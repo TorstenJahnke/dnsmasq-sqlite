@@ -11,3 +11,4 @@ dnsmasq-2.91/src/.copts_*
 # Temp files
 *~
 *.swp
+.DS_Store
