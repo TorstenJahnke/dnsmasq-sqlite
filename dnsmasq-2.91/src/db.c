@@ -20,11 +20,7 @@ static char *ipset_terminate_v6 = NULL;  /* IPv6 termination IPs (no port): "::1
 static char *ipset_dns_block = NULL;     /* DNS blocker servers (with port): "127.0.0.1#5353,[fd00::1]:5353" */
 static char *ipset_dns_allow = NULL;     /* Real DNS servers (with port): "8.8.8.8,1.1.1.1#5353" */
 
-/* IPSet types for lookup results */
-#define IPSET_TYPE_NONE       0
-#define IPSET_TYPE_TERMINATE  1
-#define IPSET_TYPE_DNS_BLOCK  2
-#define IPSET_TYPE_DNS_ALLOW  3
+/* Note: IPSET_TYPE_* constants are defined in dnsmasq.h */
 
 #ifdef HAVE_REGEX
 /* Regex pattern cache for performance (1-2 million patterns!)
@@ -186,8 +182,8 @@ void db_init(void)
     NULL
   );
   /* Note: Ignore error if table doesn't exist - it's optional */
-#endif
 
+#ifdef HAVE_REGEX
   printf("SQLite ready: DNS forwarding + blocker (exact/wildcard/regex + per-domain IPs)\n");
 #else
   printf("SQLite ready: DNS forwarding + blocker (exact/wildcard + per-domain IPs)\n");
@@ -281,19 +277,19 @@ char *db_get_forward_server(const char *name)
   const unsigned char *server_text = NULL;
 
   /* Check 1: DNS Allow (whitelist) - Forward to real DNS
-   * Example: "trusted-ads.com" in domain_dns_allow → forward to 8.8.8.8
+   * Example: "trusted-ads.com" in fqdn_dns_allow → forward to 8.8.8.8
    * This bypasses the blocker for trusted domains
    */
-  if (db_dns_allow)
+  if (db_fqdn_dns_allow)
   {
-    sqlite3_reset(db_dns_allow);
-    if (sqlite3_bind_text(db_dns_allow, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
-        sqlite3_bind_text(db_dns_allow, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    sqlite3_reset(db_fqdn_dns_allow);
+    if (sqlite3_bind_text(db_fqdn_dns_allow, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(db_fqdn_dns_allow, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
     {
-      if (sqlite3_step(db_dns_allow) == SQLITE_ROW)
+      if (sqlite3_step(db_fqdn_dns_allow) == SQLITE_ROW)
       {
         /* Domain found in allow list */
-        server_text = sqlite3_column_text(db_dns_allow, 0);  /* Server */
+        server_text = sqlite3_column_text(db_fqdn_dns_allow, 0);  /* Server */
 
         if (server_text)
         {
@@ -305,19 +301,19 @@ char *db_get_forward_server(const char *name)
   }
 
   /* Check 2: DNS Block (blacklist) - Forward to blocker DNS
-   * Example: "evil.xyz" in domain_dns_block → forward to 10.0.0.1 (blocker DNS)
+   * Example: "evil.xyz" in fqdn_dns_block → forward to 10.0.0.1 (blocker DNS)
    * The blocker DNS returns 0.0.0.0 for everything
    */
-  if (db_dns_block)
+  if (db_fqdn_dns_block)
   {
-    sqlite3_reset(db_dns_block);
-    if (sqlite3_bind_text(db_dns_block, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
-        sqlite3_bind_text(db_dns_block, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    sqlite3_reset(db_fqdn_dns_block);
+    if (sqlite3_bind_text(db_fqdn_dns_block, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(db_fqdn_dns_block, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
     {
-      if (sqlite3_step(db_dns_block) == SQLITE_ROW)
+      if (sqlite3_step(db_fqdn_dns_block) == SQLITE_ROW)
       {
         /* Domain found in block list */
-        server_text = sqlite3_column_text(db_dns_block, 0);  /* Server */
+        server_text = sqlite3_column_text(db_fqdn_dns_block, 0);  /* Server */
 
         if (server_text)
         {
@@ -332,132 +328,58 @@ char *db_get_forward_server(const char *name)
   return NULL;
 }
 
-/* Check if domain should be blocked and get termination IPs
- * Supports two modes:
- * 1. Exact-only (hosts-style): domain_exact table
- *    - Blocks ONLY the exact domain
- * 2. Wildcard: domain table
- *    - Blocks domain AND all subdomains (*.domain)
+/* Legacy function for backward compatibility with rfc1035.c
+ * In Schema v4.0, this uses the new db_lookup_domain() and returns IPs from IPSet configs
  *
  * Returns:
- *   1 if blocked (ipv4_out and ipv6_out are set to IPs from DB, or NULL if not in DB)
+ *   1 if blocked (ipv4_out and ipv6_out are set to first IPs from IPSet configs)
  *   0 if not blocked
  *
- * Caller must free ipv4_out and ipv6_out if not NULL
+ * Note: In v4.0, IPs come from IPSet configurations, not from per-domain DB columns
  */
 int db_get_block_ips(const char *name, char **ipv4_out, char **ipv6_out)
 {
+  extern struct daemon *daemon;
+
   db_init();
 
   if (!db)
-  {
     return 0;  /* No DB → don't block */
-  }
 
   /* Initialize outputs */
   if (ipv4_out) *ipv4_out = NULL;
   if (ipv6_out) *ipv6_out = NULL;
 
-  const unsigned char *ipv4_text = NULL;
-  const unsigned char *ipv6_text = NULL;
+  /* Use new v4.0 lookup logic */
+  int ipset_type = db_lookup_domain(name);
 
-  /* Check 1: Exact-only table (hosts-style matching)
-   * Example: "paypal-evil.de" in domain_exact blocks ONLY "paypal-evil.de"
-   */
-  if (db_domain_exact)
+  /* Only IPSET_TYPE_TERMINATE should directly return termination IPs
+   * DNS_BLOCK and DNS_ALLOW are forwarding rules, not blocking rules */
+  if (ipset_type == IPSET_TYPE_TERMINATE)
   {
-    sqlite3_reset(db_domain_exact);
-    if (sqlite3_bind_text(db_domain_exact, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    /* Get termination IPs from IPSet configs (not from DB!) */
+    struct ipset_config *ipv4_cfg = &daemon->ipset_terminate_v4;
+    struct ipset_config *ipv6_cfg = &daemon->ipset_terminate_v6;
+
+    /* Return first IPv4 from config */
+    if (ipv4_out && ipv4_cfg->count > 0 && ipv4_cfg->servers[0].sa.sa_family == AF_INET)
     {
-      if (sqlite3_step(db_domain_exact) == SQLITE_ROW)
-      {
-        /* Domain found in exact table */
-        ipv4_text = sqlite3_column_text(db_domain_exact, 0);  /* IPv4 */
-        ipv6_text = sqlite3_column_text(db_domain_exact, 1);  /* IPv6 */
-
-        if (ipv4_out && ipv4_text)
-          *ipv4_out = strdup((const char *)ipv4_text);
-        if (ipv6_out && ipv6_text)
-          *ipv6_out = strdup((const char *)ipv6_text);
-
-        printf("block (exact): %s → IPv4=%s IPv6=%s\n", name,
-               ipv4_text ? (const char *)ipv4_text : "(fallback)",
-               ipv6_text ? (const char *)ipv6_text : "(fallback)");
-        return 1;
-      }
+      char ip_str[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &ipv4_cfg->servers[0].in.sin_addr, ip_str, sizeof(ip_str));
+      *ipv4_out = strdup(ip_str);
     }
-  }
 
-  /* Check 2: Wildcard table (subdomain matching)
-   * Example: "paypal-evil.de" in domain blocks "paypal-evil.de" AND "*.paypal-evil.de"
-   */
-  if (db_domain_wildcard)
-  {
-    sqlite3_reset(db_domain_wildcard);
-    if (sqlite3_bind_text(db_domain_wildcard, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
-        sqlite3_bind_text(db_domain_wildcard, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    /* Return first IPv6 from config */
+    if (ipv6_out && ipv6_cfg->count > 0 && ipv6_cfg->servers[0].sa.sa_family == AF_INET6)
     {
-      if (sqlite3_step(db_domain_wildcard) == SQLITE_ROW)
-      {
-        /* Domain found in wildcard table */
-        ipv4_text = sqlite3_column_text(db_domain_wildcard, 0);  /* IPv4 */
-        ipv6_text = sqlite3_column_text(db_domain_wildcard, 1);  /* IPv6 */
-
-        if (ipv4_out && ipv4_text)
-          *ipv4_out = strdup((const char *)ipv4_text);
-        if (ipv6_out && ipv6_text)
-          *ipv6_out = strdup((const char *)ipv6_text);
-
-        printf("block (wildcard): %s → IPv4=%s IPv6=%s\n", name,
-               ipv4_text ? (const char *)ipv4_text : "(fallback)",
-               ipv6_text ? (const char *)ipv6_text : "(fallback)");
-        return 1;
-      }
+      char ip_str[INET6_ADDRSTRLEN];
+      inet_ntop(AF_INET6, &ipv6_cfg->servers[0].in6.sin6_addr, ip_str, sizeof(ip_str));
+      *ipv6_out = strdup(ip_str);
     }
+
+    printf("block (v4.0): %s → TERMINATE\n", name);
+    return 1;  /* Blocked */
   }
-
-#ifdef HAVE_REGEX
-  /* Check 3: Regex patterns (slowest, check last!)
-   * Load patterns on first call, then cache compiled regex in memory
-   * For 1-2 million patterns, this is the performance bottleneck
-   */
-  if (db_domain_regex)
-  {
-    /* Load patterns into cache on first use */
-    if (!regex_cache_loaded)
-      load_regex_cache();
-
-    /* Iterate through cached patterns and test domain */
-    regex_cache_entry *entry = regex_cache;
-    while (entry)
-    {
-      int rc = pcre2_match(
-        entry->compiled,        /* Compiled pattern */
-        (PCRE2_SPTR)name,       /* Subject string */
-        strlen(name),           /* Subject length */
-        0,                      /* Start offset */
-        0,                      /* Options */
-        entry->match_data,      /* Match data block */
-        NULL                    /* Match context */
-      );
-
-      if (rc >= 0)  /* Match found! */
-      {
-        if (ipv4_out && entry->ipv4)
-          *ipv4_out = strdup(entry->ipv4);
-        if (ipv6_out && entry->ipv6)
-          *ipv6_out = strdup(entry->ipv6);
-
-        printf("block (regex): %s matched pattern '%s' → IPv4=%s IPv6=%s\n", name, entry->pattern,
-               entry->ipv4 ? entry->ipv4 : "(fallback)",
-               entry->ipv6 ? entry->ipv6 : "(fallback)");
-        return 1;
-      }
-
-      entry = entry->next;
-    }
-  }
-#endif
 
   return 0;  /* Not blocked */
 }
@@ -624,10 +546,7 @@ static void free_regex_cache(void)
       pcre2_code_free(entry->compiled);
     if (entry->match_data)
       pcre2_match_data_free(entry->match_data);
-    if (entry->ipv4)
-      free(entry->ipv4);
-    if (entry->ipv6)
-      free(entry->ipv6);
+    /* Note: In v4.0, IPs come from IPSet configs, not cached in entries */
     free(entry);
 
     entry = next;
@@ -661,7 +580,7 @@ int db_lookup_domain(const char *name)
 
   /* Step 1: Check block_regex (HIGHEST priority!) */
 #ifdef HAVE_REGEX
-  if (stmt_block_regex)
+  if (db_block_regex)
   {
     /* Load regex patterns into cache on first use */
     if (!regex_cache_loaded)
@@ -693,12 +612,12 @@ int db_lookup_domain(const char *name)
 #endif
 
   /* Step 2: Check block_exact */
-  if (stmt_block_exact)
+  if (db_block_exact)
   {
-    sqlite3_reset(stmt_block_exact);
-    if (sqlite3_bind_text(stmt_block_exact, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    sqlite3_reset(db_block_exact);
+    if (sqlite3_bind_text(db_block_exact, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
     {
-      if (sqlite3_step(stmt_block_exact) == SQLITE_ROW)
+      if (sqlite3_step(db_block_exact) == SQLITE_ROW)
       {
         printf("db_lookup: %s in block_exact → TERMINATE\n", name);
         return IPSET_TYPE_TERMINATE;
@@ -707,15 +626,15 @@ int db_lookup_domain(const char *name)
   }
 
   /* Step 3: Check block_wildcard */
-  if (stmt_block_wildcard)
+  if (db_block_wildcard)
   {
-    sqlite3_reset(stmt_block_wildcard);
-    if (sqlite3_bind_text(stmt_block_wildcard, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
-        sqlite3_bind_text(stmt_block_wildcard, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    sqlite3_reset(db_block_wildcard);
+    if (sqlite3_bind_text(db_block_wildcard, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(db_block_wildcard, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
     {
-      if (sqlite3_step(stmt_block_wildcard) == SQLITE_ROW)
+      if (sqlite3_step(db_block_wildcard) == SQLITE_ROW)
       {
-        const unsigned char *matched_domain = sqlite3_column_text(stmt_block_wildcard, 0);
+        const unsigned char *matched_domain = sqlite3_column_text(db_block_wildcard, 0);
         printf("db_lookup: %s matched block_wildcard '%s' → DNS_BLOCK\n", name,
                matched_domain ? (const char *)matched_domain : "?");
         return IPSET_TYPE_DNS_BLOCK;
@@ -724,15 +643,15 @@ int db_lookup_domain(const char *name)
   }
 
   /* Step 4: Check fqdn_dns_allow */
-  if (stmt_fqdn_dns_allow)
+  if (db_fqdn_dns_allow)
   {
-    sqlite3_reset(stmt_fqdn_dns_allow);
-    if (sqlite3_bind_text(stmt_fqdn_dns_allow, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
-        sqlite3_bind_text(stmt_fqdn_dns_allow, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    sqlite3_reset(db_fqdn_dns_allow);
+    if (sqlite3_bind_text(db_fqdn_dns_allow, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(db_fqdn_dns_allow, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
     {
-      if (sqlite3_step(stmt_fqdn_dns_allow) == SQLITE_ROW)
+      if (sqlite3_step(db_fqdn_dns_allow) == SQLITE_ROW)
       {
-        const unsigned char *matched_domain = sqlite3_column_text(stmt_fqdn_dns_allow, 0);
+        const unsigned char *matched_domain = sqlite3_column_text(db_fqdn_dns_allow, 0);
         printf("db_lookup: %s matched fqdn_dns_allow '%s' → DNS_ALLOW\n", name,
                matched_domain ? (const char *)matched_domain : "?");
         return IPSET_TYPE_DNS_ALLOW;
@@ -741,15 +660,15 @@ int db_lookup_domain(const char *name)
   }
 
   /* Step 5: Check fqdn_dns_block */
-  if (stmt_fqdn_dns_block)
+  if (db_fqdn_dns_block)
   {
-    sqlite3_reset(stmt_fqdn_dns_block);
-    if (sqlite3_bind_text(stmt_fqdn_dns_block, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
-        sqlite3_bind_text(stmt_fqdn_dns_block, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    sqlite3_reset(db_fqdn_dns_block);
+    if (sqlite3_bind_text(db_fqdn_dns_block, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(db_fqdn_dns_block, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
     {
-      if (sqlite3_step(stmt_fqdn_dns_block) == SQLITE_ROW)
+      if (sqlite3_step(db_fqdn_dns_block) == SQLITE_ROW)
       {
-        const unsigned char *matched_domain = sqlite3_column_text(stmt_fqdn_dns_block, 0);
+        const unsigned char *matched_domain = sqlite3_column_text(db_fqdn_dns_block, 0);
         printf("db_lookup: %s matched fqdn_dns_block '%s' → DNS_BLOCK\n", name,
                matched_domain ? (const char *)matched_domain : "?");
         return IPSET_TYPE_DNS_BLOCK;
@@ -782,6 +701,34 @@ struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6)
     default:
       return NULL;
   }
+}
+
+/* Legacy functions for backward compatibility with old blocking code
+ * In Schema v4.0, these return the first IP from IPSet configurations
+ * instead of global fallback addresses
+ */
+struct in_addr *db_get_block_ipv4(void)
+{
+  extern struct daemon *daemon;
+  struct ipset_config *cfg = &daemon->ipset_terminate_v4;
+
+  /* Return first IPv4 address from IPSet terminate config */
+  if (cfg->count > 0 && cfg->servers[0].sa.sa_family == AF_INET)
+    return &cfg->servers[0].in.sin_addr;
+
+  return NULL;  /* No IPv4 termination address configured */
+}
+
+struct in6_addr *db_get_block_ipv6(void)
+{
+  extern struct daemon *daemon;
+  struct ipset_config *cfg = &daemon->ipset_terminate_v6;
+
+  /* Return first IPv6 address from IPSet terminate config */
+  if (cfg->count > 0 && cfg->servers[0].sa.sa_family == AF_INET6)
+    return &cfg->servers[0].in6.sin6_addr;
+
+  return NULL;  /* No IPv6 termination address configured */
 }
 
 #endif

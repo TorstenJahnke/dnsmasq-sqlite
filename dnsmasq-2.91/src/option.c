@@ -5420,30 +5420,6 @@ err:
       }
 
     case LOPT_IPSET_TERM_V4:
-      {
-	db_set_ipset_terminate_v4(opt_string_alloc(arg));
-	break;
-      }
-
-    case LOPT_IPSET_TERM_V6:
-      {
-	db_set_ipset_terminate_v6(opt_string_alloc(arg));
-	break;
-      }
-
-    case LOPT_IPSET_DNS_BLOCK:
-      {
-	db_set_ipset_dns_block(opt_string_alloc(arg));
-	break;
-      }
-
-    case LOPT_IPSET_DNS_ALLOW:
-      {
-	db_set_ipset_dns_allow(opt_string_alloc(arg));
-	break;
-      }
-
-    case LOPT_IPSET_TERM_V4:
     case LOPT_IPSET_TERM_V6:
     case LOPT_IPSET_DNS_BLOCK:
     case LOPT_IPSET_DNS_ALLOW:
