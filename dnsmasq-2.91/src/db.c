@@ -55,7 +55,8 @@ void db_init(void)
 
   if (sqlite3_open(db_file, &db))
   {
-    fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
+    int ret = fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
+    (void)ret;  /* Suppress unused warning - logging errors is best-effort */
     exit(1);
   }
 
@@ -152,7 +153,8 @@ void db_init(void)
     NULL
   ))
   {
-    fprintf(stderr, "Can't prepare block_wildcard statement: %s\n", sqlite3_errmsg(db));
+    int ret = fprintf(stderr, "Can't prepare block_wildcard statement: %s\n", sqlite3_errmsg(db));
+    (void)ret;  /* Suppress unused warning - logging errors is best-effort */
     exit(1);
   }
 
@@ -331,13 +333,19 @@ char *db_get_forward_server(const char *name)
 /* Legacy function for backward compatibility with rfc1035.c
  * In Schema v4.0, this uses the new db_lookup_domain() and returns IPs from IPSet configs
  *
+ * @param name       Domain name to check (e.g., "example.com")
+ * @param ipv4_out   OUT: IPv4 termination address (caller must free), NULL if not blocked
+ * @param ipv6_out   OUT: IPv6 termination address (caller must free), NULL if not blocked
+ *
  * Returns:
  *   1 if blocked (ipv4_out and ipv6_out are set to first IPs from IPSet configs)
  *   0 if not blocked
  *
  * Note: In v4.0, IPs come from IPSet configurations, not from per-domain DB columns
  */
-int db_get_block_ips(const char *name, char **ipv4_out, char **ipv6_out)
+int db_get_block_ips(const char *name,
+                     char **ipv4_out,  /* OUT: IPv4 address or NULL */
+                     char **ipv6_out)  /* OUT: IPv6 address or NULL */
 {
   extern struct daemon *daemon;
 
@@ -483,8 +491,9 @@ static void load_regex_cache(void)
     {
       PCRE2_UCHAR error_buffer[256];
       pcre2_get_error_message(errorcode, error_buffer, sizeof(error_buffer));
-      fprintf(stderr, "Regex compile error at offset %zu: %s (pattern: %s)\n",
-              erroroffset, error_buffer, pattern_text);
+      int ret = fprintf(stderr, "Regex compile error at offset %zu: %s (pattern: %s)\n",
+                        erroroffset, error_buffer, pattern_text);
+      (void)ret;  /* Suppress unused warning */
       failed++;
       continue;
     }
@@ -494,7 +503,8 @@ static void load_regex_cache(void)
     if (!match_data)
     {
       pcre2_code_free(compiled);
-      fprintf(stderr, "Failed to create match data for pattern: %s\n", pattern_text);
+      int ret = fprintf(stderr, "Failed to create match data for pattern: %s\n", pattern_text);
+      (void)ret;  /* Suppress unused warning */
       failed++;
       continue;
     }
@@ -505,7 +515,8 @@ static void load_regex_cache(void)
     {
       pcre2_code_free(compiled);
       pcre2_match_data_free(match_data);
-      fprintf(stderr, "Out of memory loading regex cache!\n");
+      int ret = fprintf(stderr, "Out of memory loading regex cache!\n");
+      (void)ret;  /* Suppress unused warning */
       break;
     }
 
@@ -682,8 +693,14 @@ int db_lookup_domain(const char *name)
 
 /* Get IPSet configuration based on type and query type
  * Returns pointer to ipset_config from daemon structure
+ *
+ * @param ipset_type  IPSET_TYPE_* constant (TERMINATE, DNS_BLOCK, DNS_ALLOW)
+ * @param is_ipv6     0 for IPv4, 1 for IPv6 (only relevant for TERMINATE type)
+ *
+ * Returns: Pointer to ipset_config or NULL if invalid type
  */
-struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6)
+struct ipset_config *db_get_ipset_config(int ipset_type,  /* IPSET_TYPE_* constant */
+                                          int is_ipv6)     /* 0=IPv4, 1=IPv6 */
 {
   extern struct daemon *daemon;
 
