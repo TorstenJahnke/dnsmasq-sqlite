@@ -649,6 +649,11 @@ struct allowlist {
   struct allowlist *next;
 };
 
+struct ipset_config {
+  union mysockaddr servers[3];  /* Up to 3 servers/IPs */
+  int count;                     /* Number of configured entries */
+};
+
 struct irec {
   union mysockaddr addr;
   struct in_addr netmask; /* only valid for IPv4 */
@@ -1183,6 +1188,10 @@ extern struct daemon {
   int server_has_wildcard;
   int serverarraysz, serverarrayhwm;
   struct ipsets *ipsets, *nftsets;
+  struct ipset_config ipset_terminate_v4;
+  struct ipset_config ipset_terminate_v6;
+  struct ipset_config ipset_dns_block;
+  struct ipset_config ipset_dns_allow;
   u32 allowlist_mask;
   struct allowlist *allowlists;
   int log_fac; /* log facility */
@@ -1934,6 +1943,20 @@ void db_cleanup(void);
 char *db_get_forward_server(const char *domain);  /* DNS forwarding (returns server or NULL) */
 int db_check_block(const char *domain);
 int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
+
+/* Schema v4.0: IPSet types for lookup results */
+#define IPSET_TYPE_NONE       0  /* No match → use default DNS */
+#define IPSET_TYPE_TERMINATE  1  /* Direct termination (block_regex, block_exact) */
+#define IPSET_TYPE_DNS_BLOCK  2  /* Forward to DNS blocker (block_wildcard, fqdn_dns_block) */
+#define IPSET_TYPE_DNS_ALLOW  3  /* Forward to real DNS (fqdn_dns_allow) */
+
+/* Schema v4.0: New lookup function with 5-step priority */
+int db_lookup_domain(const char *domain);  /* Returns IPSET_TYPE_* constant */
+struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6);
+
+/* Legacy functions for backward compatibility */
+struct in_addr *db_get_block_ipv4(void);
+struct in6_addr *db_get_block_ipv6(void);
 
 /* IPSet configuration setters/getters */
 void db_set_ipset_terminate_v4(char *addresses);

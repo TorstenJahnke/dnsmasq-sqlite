@@ -5420,26 +5420,90 @@ err:
       }
 
     case LOPT_IPSET_TERM_V4:
-      {
-	db_set_ipset_terminate_v4(opt_string_alloc(arg));
-	break;
-      }
-
     case LOPT_IPSET_TERM_V6:
-      {
-	db_set_ipset_terminate_v6(opt_string_alloc(arg));
-	break;
-      }
-
     case LOPT_IPSET_DNS_BLOCK:
-      {
-	db_set_ipset_dns_block(opt_string_alloc(arg));
-	break;
-      }
-
     case LOPT_IPSET_DNS_ALLOW:
       {
-	db_set_ipset_dns_allow(opt_string_alloc(arg));
+	struct ipset_config *cfg = NULL;
+	int is_v6 = 0;
+
+	/* Select the right config struct */
+	if (option == LOPT_IPSET_TERM_V4)
+	  cfg = &daemon->ipset_terminate_v4;
+	else if (option == LOPT_IPSET_TERM_V6) {
+	  cfg = &daemon->ipset_terminate_v6;
+	  is_v6 = 1;
+	}
+	else if (option == LOPT_IPSET_DNS_BLOCK)
+	  cfg = &daemon->ipset_dns_block;
+	else if (option == LOPT_IPSET_DNS_ALLOW)
+	  cfg = &daemon->ipset_dns_allow;
+
+	/* Parse comma-separated list of servers/IPs */
+	char *copy = opt_string_alloc(arg);
+	char *token = copy;
+	char *comma;
+
+	cfg->count = 0;
+	while (token && cfg->count < 3) {
+	  comma = strchr(token, ',');
+	  if (comma)
+	    *comma = '\0';
+
+	  /* Parse IP address with optional port */
+	  union mysockaddr *addr = &cfg->servers[cfg->count];
+	  char *port_str = strchr(token, '#');
+	  int port = NAMESERVER_PORT; /* Default DNS port 53 */
+
+	  if (port_str) {
+	    *port_str = '\0';
+	    port_str++;
+	    port = atoi(port_str);
+	    if (port <= 0 || port > 65535)
+	      ret_err(_("bad port number"));
+	  }
+
+	  /* Parse IPv4 or IPv6 address */
+	  if (is_v6 || option == LOPT_IPSET_DNS_BLOCK || option == LOPT_IPSET_DNS_ALLOW) {
+	    /* Try IPv6 first */
+	    if (inet_pton(AF_INET6, token, &addr->in6.sin6_addr) == 1) {
+	      addr->sa.sa_family = AF_INET6;
+	      addr->in6.sin6_port = htons(port);
+#ifdef HAVE_SOCKADDR_SA_LEN
+	      addr->in6.sin6_len = sizeof(struct sockaddr_in6);
+#endif
+	    }
+	    /* Try IPv4 */
+	    else if (inet_pton(AF_INET, token, &addr->in.sin_addr) == 1) {
+	      if (is_v6 && option == LOPT_IPSET_TERM_V6)
+		ret_err(_("IPv4 address not allowed for ipset-terminate-v6"));
+	      addr->sa.sa_family = AF_INET;
+	      addr->in.sin_port = htons(port);
+#ifdef HAVE_SOCKADDR_SA_LEN
+	      addr->in.sin_len = sizeof(struct sockaddr_in);
+#endif
+	    }
+	    else
+	      ret_err(_("bad IP address"));
+	  }
+	  else {
+	    /* IPv4 only for LOPT_IPSET_TERM_V4 */
+	    if (inet_pton(AF_INET, token, &addr->in.sin_addr) != 1)
+	      ret_err(_("bad IPv4 address"));
+	    addr->sa.sa_family = AF_INET;
+	    addr->in.sin_port = htons(port);
+#ifdef HAVE_SOCKADDR_SA_LEN
+	    addr->in.sin_len = sizeof(struct sockaddr_in);
+#endif
+	  }
+
+	  cfg->count++;
+	  token = comma ? comma + 1 : NULL;
+	}
+
+	if (cfg->count == 0)
+	  ret_err(_("at least one IP address required"));
+
 	break;
       }
 #endif
