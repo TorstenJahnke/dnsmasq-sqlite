@@ -195,13 +195,11 @@ struct myoption {
 #define LOPT_PXE_OPT       386
 #define LOPT_NO_ENCODE     387
 #define LOPT_DO_ENCODE     388
-#define LOPT_DB_FILE            500
-#define LOPT_DB_BLOCK_IP4       501
-#define LOPT_DB_BLOCK_IP6       502
-#define LOPT_IPSET_TERM_V4      503
-#define LOPT_IPSET_TERM_V6      504
-#define LOPT_IPSET_DNS_BLOCK    505
-#define LOPT_IPSET_DNS_ALLOW    506
+#define LOPT_DB_FILE       500
+#define LOPT_IPSET_TERM_V4 501
+#define LOPT_IPSET_TERM_V6 502
+#define LOPT_IPSET_DNS_BLOCK 503
+#define LOPT_IPSET_DNS_ALLOW 504
 
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -402,8 +400,6 @@ static const struct myoption opts[] =
     { "no-ident", 0, 0, LOPT_NO_IDENT },
     { "max-tcp-connections", 1, 0, LOPT_MAX_PROCS },
     { "db-file", 1, 0, LOPT_DB_FILE },
-    { "db-block-ipv4", 1, 0, LOPT_DB_BLOCK_IP4 },
-    { "db-block-ipv6", 1, 0, LOPT_DB_BLOCK_IP6 },
     { "ipset-terminate-v4", 1, 0, LOPT_IPSET_TERM_V4 },
     { "ipset-terminate-v6", 1, 0, LOPT_IPSET_TERM_V6 },
     { "ipset-dns-block", 1, 0, LOPT_IPSET_DNS_BLOCK },
@@ -615,8 +611,10 @@ static struct {
   { LOPT_CACHE_RR, ARG_DUP, "<RR-type>", gettext_noop("Cache this DNS resource record type."), NULL },
   { LOPT_MAX_PROCS, ARG_ONE, "<integer>", gettext_noop("Maximum number of concurrent tcp connections."), NULL },
   { LOPT_DB_FILE, ARG_ONE, "<path>", gettext_noop("Load domains from Sqlite .db"), NULL },
-  { LOPT_DB_BLOCK_IP4, ARG_ONE, "<ipaddr>", gettext_noop("IPv4 address to return for blocked domains."), NULL },
-  { LOPT_DB_BLOCK_IP6, ARG_ONE, "<ipaddr>", gettext_noop("IPv6 address to return for blocked domains."), NULL },
+  { LOPT_IPSET_TERM_V4, ARG_ONE, "<ipaddr>,...", gettext_noop("IPv4 termination addresses (comma-separated, no port)."), NULL },
+  { LOPT_IPSET_TERM_V6, ARG_ONE, "<ipaddr>,...", gettext_noop("IPv6 termination addresses (comma-separated, no port)."), NULL },
+  { LOPT_IPSET_DNS_BLOCK, ARG_ONE, "<ip>[#port],...", gettext_noop("DNS blockers (comma-separated, with port notation)."), NULL },
+  { LOPT_IPSET_DNS_ALLOW, ARG_ONE, "<ip>[#port],...", gettext_noop("DNS allow servers (comma-separated, with port notation)."), NULL },
   { 0, 0, NULL, NULL, NULL }
 }; 
 
@@ -5418,24 +5416,6 @@ err:
     case LOPT_DB_FILE:
       {
 	db_set_file(opt_string_alloc(arg));
-	break;
-      }
-
-    case LOPT_DB_BLOCK_IP4:
-      {
-	struct in_addr addr4;
-	if (inet_pton(AF_INET, arg, &addr4) != 1)
-	  ret_err(_("bad IPv4 address"));
-	db_set_block_ipv4(&addr4);
-	break;
-      }
-
-    case LOPT_DB_BLOCK_IP6:
-      {
-	struct in6_addr addr6;
-	if (inet_pton(AF_INET6, arg, &addr6) != 1)
-	  ret_err(_("bad IPv6 address"));
-	db_set_block_ipv6(&addr6);
 	break;
       }
 

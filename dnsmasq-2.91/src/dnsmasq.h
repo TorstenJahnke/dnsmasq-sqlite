@@ -1940,13 +1940,31 @@ int add_update_server(int flags,
 void db_set_file(char *file);
 void db_init(void);
 void db_cleanup(void);
+char *db_get_forward_server(const char *domain);  /* DNS forwarding (returns server or NULL) */
 int db_check_block(const char *domain);
 int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
-void db_set_block_ipv4(struct in_addr *addr);
-void db_set_block_ipv6(struct in6_addr *addr);
+
+/* Schema v4.0: IPSet types for lookup results */
+#define IPSET_TYPE_NONE       0  /* No match → use default DNS */
+#define IPSET_TYPE_TERMINATE  1  /* Direct termination (block_regex, block_exact) */
+#define IPSET_TYPE_DNS_BLOCK  2  /* Forward to DNS blocker (block_wildcard, fqdn_dns_block) */
+#define IPSET_TYPE_DNS_ALLOW  3  /* Forward to real DNS (fqdn_dns_allow) */
+
+/* Schema v4.0: New lookup function with 5-step priority */
+int db_lookup_domain(const char *domain);  /* Returns IPSET_TYPE_* constant */
+struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6);
+
+/* Legacy functions for backward compatibility */
 struct in_addr *db_get_block_ipv4(void);
 struct in6_addr *db_get_block_ipv6(void);
-/* Schema v4.0: New IPSet-based lookup functions */
-int db_lookup_domain(const char *name);
-struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6);
+
+/* IPSet configuration setters/getters */
+void db_set_ipset_terminate_v4(char *addresses);
+void db_set_ipset_terminate_v6(char *addresses);
+void db_set_ipset_dns_block(char *servers);
+void db_set_ipset_dns_allow(char *servers);
+char *db_get_ipset_terminate_v4(void);
+char *db_get_ipset_terminate_v6(void);
+char *db_get_ipset_dns_block(void);
+char *db_get_ipset_dns_allow(void);
 #endif 
