@@ -63,8 +63,8 @@ static unsigned long lru_misses = 0;        /* Cache misses */
 static inline unsigned int lru_hash_func(const char *domain)
 {
   unsigned int hash = 5381;
-  int c;
-  while ((c = *domain++))
+  unsigned char c;
+  while ((c = (unsigned char)*domain++))
     hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
   return hash & (LRU_HASH_SIZE - 1);  /* Fast modulo for power of 2 */
 }
@@ -203,11 +203,12 @@ void db_init(void)
    * Note: 2 GB is SQLite's hardcoded max, even with more system RAM */
   sqlite3_exec(db, "PRAGMA mmap_size = 2147483648", NULL, NULL, NULL);
 
-  /* Cache Size: 25,000,000 pages (~100 GB with 4KB pages)
+  /* Cache Size: 6,553,600 pages (~100 GB with 16KB pages)
    * Optimized for: 128 GB RAM server with 2-3 Billion domains
    * Benefit: Entire DB + indexes fit in RAM = 0.2-2 ms lookups!
-   * Calculation: -25000000 = 25M pages * 4KB = 100 GB cache */
-  sqlite3_exec(db, "PRAGMA cache_size = -25000000", NULL, NULL, NULL);
+   * Calculation: -6553600 = 6.5M pages * 16KB = 100 GB cache
+   * NOTE: Assumes DB was created with page_size=16384 */
+  sqlite3_exec(db, "PRAGMA cache_size = -6553600", NULL, NULL, NULL);
 
   /* Temp Store: MEMORY
    * Benefit: Temp tables in RAM instead of disk (for sorting/aggregation) */
@@ -946,6 +947,7 @@ struct in6_addr *db_get_block_ipv6(void)
 /* Initialize LRU cache */
 static void lru_init(void)
 {
+  // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,bugprone-multi-level-implicit-pointer-conversion)
   memset(lru_hash, 0, sizeof(lru_hash));
   lru_head = NULL;
   lru_tail = NULL;
@@ -965,6 +967,7 @@ static void lru_cleanup(void)
     curr = next;
   }
 
+  // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,bugprone-multi-level-implicit-pointer-conversion)
   memset(lru_hash, 0, sizeof(lru_hash));
   lru_head = NULL;
   lru_tail = NULL;
@@ -974,7 +977,8 @@ static void lru_cleanup(void)
   unsigned long total = lru_hits + lru_misses;
   if (total > 0)
   {
-    double hit_rate = (double)lru_hits * 100.0 / total;
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions)
+    double hit_rate = (double)lru_hits * 100.0 / (double)total;
     printf("LRU Cache stats: %lu hits, %lu misses (%.1f%% hit rate)\n",
            lru_hits, lru_misses, hit_rate);
   }
@@ -1094,8 +1098,8 @@ static void lru_put(const char *domain, int ipset_type)
   if (!entry)
     return;  /* Out of memory, skip caching */
 
-  strncpy(entry->domain, domain, sizeof(entry->domain) - 1);
-  entry->domain[sizeof(entry->domain) - 1] = '\0';
+  /* Safe string copy with guaranteed null-termination and overflow protection */
+  snprintf(entry->domain, sizeof(entry->domain), "%s", domain);
   entry->ipset_type = ipset_type;
   entry->hits = 1;
   entry->prev = NULL;
