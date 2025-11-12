@@ -164,11 +164,11 @@ PRAGMA synchronous = NORMAL;
 -- Note: 2 GB is hardcoded SQLite max, even on systems with more RAM
 PRAGMA mmap_size = 2147483648;
 
--- Cache Size: 20,000,000 pages (~80 GB with 4KB pages)
--- Optimized for: 128 GB RAM, 1 Billion domains (~50 GB DB)
+-- Cache Size: 6,553,600 pages (~100 GB with 16KB pages)
+-- Optimized for: 128 GB RAM, 2-3 Billion domains (~150 GB DB)
 -- Benefit: Entire DB + indexes fit in RAM = 0.2-2 ms lookups!
--- Calculation: -20000000 = 20M pages * 4KB = 80 GB cache
-PRAGMA cache_size = -20000000;
+-- Calculation: -6553600 = 6.5M pages * 16KB = 100 GB cache
+PRAGMA cache_size = -6553600;
 
 -- Temp Store: MEMORY
 -- Benefit: Temp tables in RAM = faster sorting/aggregation
@@ -178,9 +178,11 @@ PRAGMA temp_store = MEMORY;
 -- Benefit: Prevents DB fragmentation, maintains performance
 PRAGMA auto_vacuum = INCREMENTAL;
 
--- Page Size: 4096 (matches OS page size on most systems)
--- Benefit: Efficient memory alignment with NVMe SSDs
-PRAGMA page_size = 4096;
+-- Page Size: 16384 (optimized for NVMe SSD with large datasets)
+-- Benefit: Fewer pages = less overhead, better for sequential reads
+-- Trade-off: 4x larger pages, but better for 2-3 Billion domains
+-- NOTE: Must be set BEFORE any tables are created (cannot change later!)
+PRAGMA page_size = 16384;
 
 -- Threads: 8 (utilize all CPU cores)
 -- Benefit: Parallel query execution on multi-core systems
