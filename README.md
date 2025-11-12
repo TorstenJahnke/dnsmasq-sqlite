@@ -1,26 +1,24 @@
 # dnsmasq-sqlite
 
-SQLite-basierter DNS-Blocker für DNSMASQ
-
-## ✅ Status: Portierung auf v2.91 abgeschlossen!
-
-Die SQLite-Integration wurde erfolgreich auf **dnsmasq v2.91** (2025) portiert mit korrigierter Blacklist-Logik.
+SQLite-basierter DNS-Blocker für DNSMASQ v2.91
 
 ## 📂 Repository-Struktur
 
 ```
 dnsmasq-sqlite/
-├── dnsmasq-2.91/           # ← AKTUELLE VERSION (v2.91 + SQLite)
-│   ├── src/                # Gepatchte Source-Dateien
-│   ├── Makefile            # Mit SQLite-Build-Flags
-│   ├── createdb.sh         # DB-Erstellungs-Script
-│   └── README-SQLITE.md    # Ausführliche Doku
-├── legacy/                 # Legacy v2.81 Integration
-│   ├── INTEGRATION.md      # Portierungs-Anleitung
-│   ├── db.c                # Original (Whitelist-Bug)
-│   ├── db-FIXED.c          # Korrigiert (Blacklist)
-│   └── createdb.sh         # DB-Script
-└── README.md               # Diese Datei
+├── dnsmasq-2.91/              # Clean DNSMASQ v2.91 Source Code
+├── dnsmasq2.91-PATCH/         # SQLite Integration Patches
+│   ├── src/db.c               # SQLite database implementation
+│   ├── src/*.{c,h}            # Modified DNSMASQ source files
+│   ├── Makefile               # Build configuration with SQLite
+│   └── README.md              # Patch documentation
+├── Management_DB/             # Database management scripts
+│   ├── Database_Creation/     # DB creation and optimization scripts
+│   ├── Setup/                 # FreeBSD/Linux setup scripts
+│   ├── Build/                 # Build scripts and patches
+│   ├── Import/Export/         # Data import/export tools
+│   └── Search/Delete/Reset/   # Database management tools
+└── Docs/                      # Additional documentation
 ```
 
 ## 🎯 Was ist dnsmasq-sqlite?
@@ -50,74 +48,59 @@ Domain in SQLite-Datenbank?
 # 1. Dependencies installieren
 sudo apt install build-essential libsqlite3-dev
 
-# 2. Kompilieren
+# 2. Patches anwenden
+cp dnsmasq2.91-PATCH/* dnsmasq-2.91/ -r
+
+# 3. Kompilieren
 cd dnsmasq-2.91
 make
 
-# 3. Datenbank erstellen
-sqlite3 blocklist.db "CREATE TABLE domain (Domain TEXT UNIQUE);"
-sqlite3 blocklist.db "CREATE UNIQUE INDEX idx_Domain ON domain(Domain);"
-sqlite3 blocklist.db "INSERT INTO domain VALUES ('ads.example.com');"
+# 4. Datenbank erstellen
+cd ../Management_DB/Database_Creation
+./createdb.sh
 
-# 4. DNSMASQ starten
+# 5. DNSMASQ starten
+cd ../../dnsmasq-2.91
 ./src/dnsmasq -d -p 5353 --db-file blocklist.db --log-queries
 
-# 5. Testen
+# 6. Testen
 dig @127.0.0.1 -p 5353 ads.example.com        # → NXDOMAIN (geblockt)
 dig @127.0.0.1 -p 5353 google.com             # → Normale Auflösung
 ```
 
-## 🔄 Zur Laufzeit ändern (OHNE Restart!)
+## 🔄 Dynamische Verwaltung (ohne Restart)
 
 ```bash
 # Domain blockieren
 sqlite3 blocklist.db "INSERT INTO domain VALUES ('tracker.example.com');"
 
-# Sofort wirksam - kein Restart nötig!
-
 # Domain freigeben
-sqlite3 blocklist.db "DELETE FROM domain WHERE Domain='tracker.example.com');"
+sqlite3 blocklist.db "DELETE FROM domain WHERE Domain='tracker.example.com';"
+
+# Oder verwende die Management-Scripte in Management_DB/
 ```
 
-## 🐛 Wichtiger Bug-Fix
+## 🔧 Implementierung
 
-Die ursprüngliche v2.81 Integration hatte einen **Logik-Bug** (Whitelist statt Blacklist):
+Die SQLite-Integration verwendet eine Blacklist-Logik: Domains in der Datenbank werden blockiert (NXDOMAIN), alle anderen werden normal aufgelöst.
 
-| Version | Logik | Verhalten |
-|---------|-------|-----------|
-| ❌ v2.81 Original | `if (!db_check_allow())` | Nur Domains IN DB wurden aufgelöst (Whitelist) |
-| ✅ v2.91 Fixed | `if (db_check_block())` | Domains IN DB werden blockiert (Blacklist) |
+## 📝 Patches
 
-Diese Portierung enthält die **korrigierte Blacklist-Logik**!
+Siehe `dnsmasq2.91-PATCH/README.md` für Details zu allen Änderungen.
 
-## 📝 Änderungen an DNSMASQ v2.91
-
-Nur **8 Dateien** wurden modifiziert:
-
-| Datei | Änderung | Zeilen |
-|-------|----------|--------|
-| `src/db.c` | ✨ NEU - SQLite-Logik | +106 |
-| `src/config.h` | `#define HAVE_SQLITE` | +1 |
-| `src/dnsmasq.h` | Function Declarations | +8 |
-| `src/option.c` | CLI Option `--db-file` | +4 Stellen |
-| `src/rfc1035.c` | Blacklist-Check | +15 |
-| `Makefile` | SQLite Build-Flags | +3 Stellen |
-| `createdb.sh` | ✨ NEU - DB-Script | +10 |
-| `.gitignore` | Build-Artefakte | +11 |
-
-**Total**: ~150 Zeilen Code-Änderungen
+**Modifizierte Dateien:**
+- `src/db.c` - SQLite database implementation (neu)
+- `src/config.h` - SQLite configuration
+- `src/dnsmasq.h` - Function declarations
+- `src/option.c` - CLI option `--db-file`
+- `src/rfc1035.c` - DNS query blocking logic
+- `src/forward.c` - DNS forwarding integration
+- `Makefile` - SQLite build flags
 
 ## 📖 Dokumentation
 
-- **`dnsmasq-2.91/README-SQLITE.md`** - Ausführliche Anleitung für v2.91
-- **`legacy/INTEGRATION.md`** - Portierungs-Anleitung für andere Versionen
-
-## 🔧 Build-Informationen
-
-- **Version**: dnsmasq 2.91 + SQLite
-- **Binary-Größe**: ~447KB
-- **Kompiliert mit**: `-lsqlite3`
-- **Getestet auf**: Linux 4.4.0
+- **`dnsmasq2.91-PATCH/README.md`** - Patch-Dokumentation
+- **`Management_DB/`** - Verschiedene Setup- und Management-Guides
 
 ## 💡 Use Cases
 
@@ -127,11 +110,10 @@ Nur **8 Dateien** wurden modifiziert:
 - **Corporate Filter**: Unternehmensnetzwerk-Filterung
 - **Privacy**: Tracking-Domain-Blocker
 
-## 🤝 Contribution
+## 🤝 Credits
 
 - Original DNSMASQ: Simon Kelley (https://thekelleys.org.uk/dnsmasq/)
-- SQLite-Integration: basierend auf v2.81 Patch
-- v2.91 Port + Bug-Fix: 2025
+- SQLite-Integration für DNSMASQ v2.91
 
 ## 📄 Lizenz
 
