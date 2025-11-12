@@ -1,0 +1,22 @@
+# Example: block_regex patterns (PCRE2)
+# Priority: 1 (HIGHEST) → IPSetTerminate (direct block)
+# One pattern per line
+
+# Block ad servers with numbers
+^ad[sz]?[0-9]*\..*$
+
+# Block tracker domains
+^tracker[0-9]+\..*$
+
+# Block analytics subdomains
+^analytics\..*$
+
+# Block telemetry
+.*telemetry.*
+
+# Block doubleclick
+.*\.doubleclick\.net$
+
+# Block common ad patterns
+^banner[s]?\..*$
+^ads?[0-9]*\..*$

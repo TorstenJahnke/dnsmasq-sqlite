@@ -1,0 +1,15 @@
+# Example: block_wildcard (domain + ALL subdomains!)
+# Priority: 3 → IPSetDNSBlock (forward to blocker DNS)
+# One domain per line
+
+# Wildcard blocking (includes ALL subdomains!)
+# privacy.com → blocks privacy.com AND *.privacy.com
+privacy.com
+tracking.company.net
+telemetry.service.io
+
+# More examples
+ad-network.com
+tracker-service.net
+analytics-platform.io
+metrics.company.com

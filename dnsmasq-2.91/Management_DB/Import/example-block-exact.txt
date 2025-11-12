@@ -1,0 +1,16 @@
+# Example: block_exact (exact domain only, NO subdomains!)
+# Priority: 2 → IPSetTerminate (direct block)
+# One domain per line
+
+# Exact blocking (www.ads.example.com NOT blocked!)
+ads.example.com
+tracker.badsite.net
+analytics.evilcorp.com
+telemetry.microsoft.com
+doubleclick.net
+googleads.g.doubleclick.net
+
+# More examples
+ad-delivery.net
+tracking-pixel.com
+metrics-collector.io

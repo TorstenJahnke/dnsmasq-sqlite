@@ -1,0 +1,14 @@
+# Example: fqdn_dns_allow (Whitelist - overrides blocks!)
+# Priority: 4 → IPSetDNSAllow (forward to real DNS)
+# One domain per line
+
+# Whitelist examples (checked BEFORE fqdn_dns_block!)
+# Use case: Block *.xyz but allow trusted.xyz
+trusted.xyz
+allowed-site.com
+safe.tracking.com
+
+# More examples
+legitimate-service.tk
+trusted-analytics.io
+verified-domain.net
