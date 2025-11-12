@@ -1,0 +1,13 @@
+# Example: fqdn_dns_block (Blacklist - lowest priority)
+# Priority: 5 (LOWEST) → IPSetDNSBlock (forward to blocker DNS)
+# One domain per line
+
+# Blacklist examples (entire TLDs or suspicious domains)
+malware.com
+suspicious-tld.xyz
+phishing-site.tk
+
+# Block entire TLDs (rare, but possible)
+# *.tk → all .tk domains (unless in fqdn_dns_allow!)
+spam-domain.ru
+scam-site.cn
