@@ -1949,10 +1949,14 @@ int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
 #define IPSET_TYPE_TERMINATE  1  /* Direct termination (block_regex, block_exact) */
 #define IPSET_TYPE_DNS_BLOCK  2  /* Forward to DNS blocker (block_wildcard, fqdn_dns_block) */
 #define IPSET_TYPE_DNS_ALLOW  3  /* Forward to real DNS (fqdn_dns_allow) */
+#define IPSET_TYPE_REWRITE    4  /* DNS Doctoring: Rewrite IPs for matched domain (dns_rewrite) */
 
 /* Schema v4.0: New lookup function with 5-step priority */
 int db_lookup_domain(const char *domain);  /* Returns IPSET_TYPE_* constant */
 struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6);
+
+/* DNS Doctoring: Get rewritten IPs for a domain */
+int db_get_rewrite_ips(const char *domain, char **ipv4_out, char **ipv6_out);
 
 /* Legacy functions for backward compatibility */
 struct in_addr *db_get_block_ipv4(void);

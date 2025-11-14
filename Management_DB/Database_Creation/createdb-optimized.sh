@@ -48,6 +48,7 @@ sqlite3 "$DB_FILE" <<'EOF'
 -- LOOKUP ORDER (sequential):
 -- 1. block_regex      → IPSetTerminate (IPv4 + IPv6 direct response)
 -- 2. block_exact      → IPSetTerminate (IPv4 + IPv6 direct response)
+-- 2a. dns_rewrite     → IPSetRewrite (DNS Doctoring: IP rewrite)
 -- 3. block_wildcard   → IPSetDNSBlock (DNS Forward to blocker)
 -- 4. fqdn_dns_allow   → IPSetDNSAllow (DNS Forward to real DNS)
 -- 5. fqdn_dns_block   → IPSetDNSBlock (DNS Forward to blocker)
@@ -94,6 +95,27 @@ CREATE TABLE IF NOT EXISTS block_exact (
 -- Covering Index (optimized for exact match lookups)
 CREATE INDEX IF NOT EXISTS idx_block_exact_covering
 ON block_exact(Domain);
+
+-- ----------------------------------------------------------------------------
+-- Table 2a: dns_rewrite - DNS Doctoring (IP Rewrite)
+-- Domain matched → return custom IPv4/IPv6 addresses (IP rewriting)
+-- Example: internal.example.com → 10.0.0.50 (IPv4), fd00::50 (IPv6)
+-- Use Case: NAT, split-horizon DNS, internal network redirection
+-- Priority: Checked after block_exact, before block_wildcard
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dns_rewrite (
+    Domain TEXT PRIMARY KEY,
+    IPv4 TEXT,
+    IPv6 TEXT
+) WITHOUT ROWID;
+
+-- Covering Index (optimized for exact + wildcard lookups)
+CREATE INDEX IF NOT EXISTS idx_dns_rewrite_covering
+ON dns_rewrite(Domain, IPv4, IPv6);
+
+-- Index for wildcard matching (LIKE queries)
+CREATE INDEX IF NOT EXISTS idx_dns_rewrite_like
+ON dns_rewrite(Domain COLLATE RTRIM);
 
 -- ----------------------------------------------------------------------------
 -- Table 3: block_wildcard - Wildcard Domain Match (includes subdomains!)
@@ -203,16 +225,16 @@ CREATE TABLE IF NOT EXISTS db_metadata (
 ) WITHOUT ROWID;
 
 INSERT OR REPLACE INTO db_metadata (key, value) VALUES
-    ('schema_version', '4.0'),
+    ('schema_version', '4.1'),
     ('created', datetime('now')),
     ('optimized', 'enterprise-128gb'),
     ('hardware', '8-core-128gb-ram'),
     ('cache_size_gb', '80'),
     ('mmap_size_gb', '2'),
     ('max_domains', '1000000000'),
-    ('features', 'without_rowid,covering_indexes,mmap,wal,dns_forwarding,threads-8,ipsets'),
-    ('ipsets', 'IPSetTerminate,IPSetDNSBlock,IPSetDNSAllow'),
-    ('lookup_order', '1:block_regex,2:block_exact,3:block_wildcard,4:fqdn_dns_allow,5:fqdn_dns_block'),
+    ('features', 'without_rowid,covering_indexes,mmap,wal,dns_forwarding,dns_doctoring,threads-8,ipsets'),
+    ('ipsets', 'IPSetTerminate,IPSetDNSBlock,IPSetDNSAllow,IPSetRewrite'),
+    ('lookup_order', '1:block_regex,2:block_exact,2a:dns_rewrite,3:block_wildcard,4:fqdn_dns_allow,5:fqdn_dns_block'),
     ('ipv6_first', 'true');
 
 EOF

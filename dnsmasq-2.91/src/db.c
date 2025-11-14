@@ -19,6 +19,7 @@ static sqlite3_stmt *db_block_exact = NULL;      /* For exact matching → IPSet
 static sqlite3_stmt *db_block_wildcard = NULL;   /* For wildcard matching → IPSetDNSBlock */
 static sqlite3_stmt *db_fqdn_dns_allow = NULL;   /* For DNS allow (whitelist) → IPSetDNSAllow */
 static sqlite3_stmt *db_fqdn_dns_block = NULL;   /* For DNS block (blacklist) → IPSetDNSBlock */
+static sqlite3_stmt *db_dns_rewrite = NULL;      /* For DNS Doctoring → IPSetRewrite (IP rewrite) */
 static char *db_file = NULL;
 
 /* IPSet configurations (comma-separated strings from config) */
@@ -46,6 +47,8 @@ static char *ipset_dns_allow = NULL;     /* Real DNS servers (with port): "8.8.8
 typedef struct lru_entry {
   char domain[256];              /* Domain name */
   int ipset_type;                /* Cached result */
+  char ipv4[46];                 /* Cached IPv4 for IPSET_TYPE_REWRITE */
+  char ipv6[46];                 /* Cached IPv6 for IPSET_TYPE_REWRITE */
   unsigned long hits;            /* Access counter for stats */
   struct lru_entry *prev;        /* Doubly-linked list for LRU */
   struct lru_entry *next;        /* Doubly-linked list for LRU */
@@ -298,6 +301,21 @@ void db_init(void)
     NULL
   );
 
+  /* Step 2a: dns_rewrite (Domain, IPv4, IPv6) → IPSetRewrite
+   * DNS Doctoring: Rewrite DNS response to custom IPs
+   * Example: internal.example.com → 10.0.0.50 (IPv4), fd00::50 (IPv6)
+   * Use Case: NAT, internal network redirection, split-horizon DNS
+   * Returns: Custom IPv4 and IPv6 addresses for the domain
+   * Priority: Checked after block_exact, before block_wildcard
+   */
+  sqlite3_prepare(
+    db,
+    "SELECT Domain, IPv4, IPv6 FROM dns_rewrite WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
+    -1,
+    &db_dns_rewrite,
+    NULL
+  );
+
   /* Step 3: block_wildcard (Domain) → IPSetDNSBlock
    * Wildcard domain match (includes subdomains!)
    * Example: privacy.com blocks privacy.com AND *.privacy.com
@@ -383,6 +401,12 @@ void db_cleanup(void)
   {
     sqlite3_finalize(db_block_wildcard);
     db_block_wildcard = NULL;
+  }
+
+  if (db_dns_rewrite)
+  {
+    sqlite3_finalize(db_dns_rewrite);
+    db_dns_rewrite = NULL;
   }
 
   if (db_fqdn_dns_allow)
@@ -741,10 +765,11 @@ static void free_regex_cache(void)
 }
 #endif
 
-/* Schema v4.0: New lookup function with 5-step priority
+/* Schema v4.0: New lookup function with 6-step priority
  * Returns IPSET_TYPE based on lookup result:
  *   1. block_regex     → IPSET_TERMINATE
  *   2. block_exact     → IPSET_TERMINATE
+ *   2a. dns_rewrite    → IPSET_REWRITE (DNS Doctoring)
  *   3. block_wildcard  → IPSET_DNS_BLOCK
  *   4. fqdn_dns_allow  → IPSET_DNS_ALLOW
  *   5. fqdn_dns_block  → IPSET_DNS_BLOCK
@@ -823,6 +848,92 @@ int db_lookup_domain(const char *name)
   }
 
 step3:
+
+  /* Step 2a: Check dns_rewrite (DNS Doctoring) */
+  if (db_dns_rewrite)
+  {
+    sqlite3_reset(db_dns_rewrite);
+    if (sqlite3_bind_text(db_dns_rewrite, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_text(db_dns_rewrite, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    {
+      if (sqlite3_step(db_dns_rewrite) == SQLITE_ROW)
+      {
+        const unsigned char *matched_domain = sqlite3_column_text(db_dns_rewrite, 0);
+        const unsigned char *ipv4 = sqlite3_column_text(db_dns_rewrite, 1);
+        const unsigned char *ipv6 = sqlite3_column_text(db_dns_rewrite, 2);
+
+        printf("db_lookup: %s matched dns_rewrite '%s' → REWRITE IPv4=%s IPv6=%s\n",
+               name,
+               matched_domain ? (const char *)matched_domain : "?",
+               ipv4 ? (const char *)ipv4 : "NULL",
+               ipv6 ? (const char *)ipv6 : "NULL");
+
+        result = IPSET_TYPE_REWRITE;
+
+        /* Cache the IPs in LRU (we'll need a special version of lru_put for this) */
+        lru_entry_t *entry = lru_get(name);
+        if (!entry)
+        {
+          /* Create new entry with rewrite IPs */
+          if (lru_count >= LRU_CACHE_SIZE)
+            lru_evict_lru();
+
+          entry = malloc(sizeof(lru_entry_t));
+          if (entry)
+          {
+            // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+            strncpy(entry->domain, name, sizeof(entry->domain) - 1);
+            entry->domain[sizeof(entry->domain) - 1] = '\0';
+            entry->ipset_type = IPSET_TYPE_REWRITE;
+
+            /* Store rewrite IPs in cache */
+            if (ipv4)
+            {
+              // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+              strncpy(entry->ipv4, (const char *)ipv4, sizeof(entry->ipv4) - 1);
+              entry->ipv4[sizeof(entry->ipv4) - 1] = '\0';
+            }
+            else
+            {
+              entry->ipv4[0] = '\0';
+            }
+
+            if (ipv6)
+            {
+              // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+              strncpy(entry->ipv6, (const char *)ipv6, sizeof(entry->ipv6) - 1);
+              entry->ipv6[sizeof(entry->ipv6) - 1] = '\0';
+            }
+            else
+            {
+              entry->ipv6[0] = '\0';
+            }
+
+            entry->hits = 1;
+            entry->prev = NULL;
+            entry->next = lru_head;
+            entry->hash_next = NULL;
+
+            if (lru_head)
+              lru_head->prev = entry;
+            lru_head = entry;
+
+            if (!lru_tail)
+              lru_tail = entry;
+
+            /* Add to hash table */
+            unsigned int hash = lru_hash_func(name);
+            entry->hash_next = lru_hash[hash];
+            lru_hash[hash] = entry;
+
+            lru_count++;
+          }
+        }
+
+        return result;
+      }
+    }
+  }
 
   /* Step 3: Check block_wildcard */
   if (db_block_wildcard)
@@ -910,6 +1021,58 @@ struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6)  // NOLINT
     default:
       return NULL;
   }
+}
+
+/* DNS Doctoring: Get rewritten IPs for a domain
+ * Returns: 1 if domain has rewrite rules, 0 if not found
+ * ipv4_out and ipv6_out are set to allocated strings (caller must free)
+ */
+int db_get_rewrite_ips(const char *domain, char **ipv4_out, char **ipv6_out)
+{
+  db_init();
+
+  if (!db || !db_dns_rewrite)
+    return 0;
+
+  /* Initialize outputs */
+  if (ipv4_out)
+    *ipv4_out = NULL;
+  if (ipv6_out)
+    *ipv6_out = NULL;
+
+  /* Check LRU cache first */
+  lru_entry_t *cached = lru_get(domain);
+  if (cached && cached->ipset_type == IPSET_TYPE_REWRITE)
+  {
+    if (ipv4_out && cached->ipv4[0] != '\0')
+      *ipv4_out = strdup(cached->ipv4);
+    if (ipv6_out && cached->ipv6[0] != '\0')
+      *ipv6_out = strdup(cached->ipv6);
+    return 1;
+  }
+
+  /* Query database */
+  sqlite3_reset(db_dns_rewrite);
+  if (sqlite3_bind_text(db_dns_rewrite, 1, domain, -1, SQLITE_TRANSIENT) != SQLITE_OK ||
+      sqlite3_bind_text(db_dns_rewrite, 2, domain, -1, SQLITE_TRANSIENT) != SQLITE_OK)
+  {
+    return 0;
+  }
+
+  if (sqlite3_step(db_dns_rewrite) == SQLITE_ROW)
+  {
+    const unsigned char *ipv4 = sqlite3_column_text(db_dns_rewrite, 1);
+    const unsigned char *ipv6 = sqlite3_column_text(db_dns_rewrite, 2);
+
+    if (ipv4_out && ipv4)
+      *ipv4_out = strdup((const char *)ipv4);
+    if (ipv6_out && ipv6)
+      *ipv6_out = strdup((const char *)ipv6);
+
+    return 1;
+  }
+
+  return 0;
 }
 
 /* Legacy functions for backward compatibility with old blocking code
