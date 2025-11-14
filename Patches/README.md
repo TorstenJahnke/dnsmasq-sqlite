@@ -1,29 +1,125 @@
 # dnsmasq SQLite Feature Patches
 
-Diese Patches fügen umfassende SQLite-basierte Features zu dnsmasq 2.91 hinzu.
-
-## Übersicht der Änderungen
-
-Dieses Patch-Set erweitert dnsmasq um drei mächtige Features:
-1. **Domain Aliasing** (CNAME-Redirects mit Wildcard-Subdomain-Support)
-2. **IP-Rewriting** (DNS-Doctoring für NAT/Split-Horizon DNS)
-3. **SQLite-Integration** für alle bestehenden Blocking-Features
+Diese Patches fügen Domain Aliasing und IP-Rewriting Features zu dnsmasq 2.91 hinzu.
 
 ## Geänderte Dateien
 
-### 1. `src/db.c` (42 KB)
-**Hauptänderungen:**
-- Neue Funktion: `db_get_domain_alias(const char *source_domain)`
-  - Zwei-Stufen-Lookup: Exact Match → Parent Domain mit Subdomain-Preservation
-  - Beispiel: `www.intel.com` → `www.keweon.center` (wenn `intel.com` → `keweon.center`)
+```
+Patches/
+├── README.md              # Diese Datei
+├── CHANGES.txt            # Detailliertes Änderungsprotokoll
+├── FILE-SUMMARY.txt       # Technische Code-Analyse
+└── dnsmasq-2.91/
+    └── src/
+        ├── db.c           # SQLite DB-Funktionen (42 KB)
+        ├── dnsmasq.h      # Function Declarations (62 KB)
+        └── rfc1035.c      # DNS Integration (69 KB)
+```
 
-- Neue Funktion: `db_get_rewrite_ipv4(const char *source_ipv4)`
-  - Lookup in `ip_rewrite_v4` Tabelle
-  - Gibt Ziel-IP zurück wenn Regel existiert
+## Features
 
-- Neue Funktion: `db_get_rewrite_ipv6(const char *source_ipv6)`
-  - Lookup in `ip_rewrite_v6` Tabelle
-  - IPv6-Unterstützung für IP-Rewriting
+### 1. Domain Aliasing (CNAME-Redirects mit Wildcard-Subdomain-Support)
+
+**Datenbank-Tabelle:**
+```sql
+CREATE TABLE domain_alias (
+    Source_Domain TEXT PRIMARY KEY,
+    Target_Domain TEXT NOT NULL
+) WITHOUT ROWID;
+```
+
+**Verhalten:**
+```
+DB: intel.com → keweon.center
+
+Query: intel.com         → CNAME: keweon.center
+Query: www.intel.com     → CNAME: www.keweon.center (automatisch!)
+Query: mail.intel.com    → CNAME: mail.keweon.center (automatisch!)
+```
+
+**Implementation:** `rfc1035.c:1683-1708` in `answer_request()`
+
+### 2. IP-Rewriting (DNS-Doctoring für NAT/Split-Horizon DNS)
+
+**Datenbank-Tabellen:**
+```sql
+CREATE TABLE ip_rewrite_v4 (
+    Source_IPv4 TEXT PRIMARY KEY,
+    Target_IPv4 TEXT NOT NULL
+) WITHOUT ROWID;
+
+CREATE TABLE ip_rewrite_v6 (
+    Source_IPv6 TEXT PRIMARY KEY,
+    Target_IPv6 TEXT NOT NULL
+) WITHOUT ROWID;
+```
+
+**Verhalten:**
+```
+DB: 178.223.16.21 → 10.20.0.10
+
+Upstream antwortet: example.com → 178.223.16.21
+dnsmasq rewrites:   example.com → 10.20.0.10
+Client erhält:      example.com → 10.20.0.10
+```
+
+**Implementation:**
+- IPv4: `rfc1035.c:1036-1056` in `extract_addresses()`
+- IPv6: `rfc1035.c:1057-1077` in `extract_addresses()`
+
+## Installation
+
+### Schritt 1: Backup erstellen
+```bash
+cp -r dnsmasq-2.91/src dnsmasq-2.91/src.backup
+```
+
+### Schritt 2: Patches anwenden
+```bash
+cp Patches/dnsmasq-2.91/src/db.c dnsmasq-2.91/src/
+cp Patches/dnsmasq-2.91/src/dnsmasq.h dnsmasq-2.91/src/
+cp Patches/dnsmasq-2.91/src/rfc1035.c dnsmasq-2.91/src/
+```
+
+### Schritt 3: Kompilieren
+```bash
+cd dnsmasq-2.91
+make clean
+make -j8
+sudo make install
+```
+
+### Schritt 4: Datenbank erstellen
+```bash
+# Datenbank mit Schema 6.2.1 erstellen
+# (siehe Management_DB/Database_Creation/createdb-optimized.sh im Hauptverzeichnis)
+./createdb-optimized.sh /var/lib/dnsmasq/blocklist.db
+```
+
+### Schritt 5: dnsmasq konfigurieren
+```bash
+# /etc/dnsmasq.conf
+db-file=/var/lib/dnsmasq/blocklist.db
+log-queries
+```
+
+## Geänderte Dateien im Detail
+
+### db.c (42 KB)
+
+**Neue Funktionen:**
+
+1. `char* db_get_domain_alias(const char *source_domain)` (Zeilen ~991-1046)
+   - Two-step lookup: Exact Match → Parent Domain + Subdomain-Preservation
+   - Beispiel: "www.intel.com" → "www.keweon.center"
+
+2. `char* db_get_rewrite_ipv4(const char *source_ipv4)` (Zeilen ~1057-1085)
+   - Lookup in ip_rewrite_v4 Tabelle
+   - Gibt Ziel-IP zurück oder NULL
+
+3. `char* db_get_rewrite_ipv6(const char *source_ipv6)` (Zeilen ~1086-1114)
+   - Lookup in ip_rewrite_v6 Tabelle
+   - IPv6-Unterstützung
 
 **Prepared Statements:**
 ```c
@@ -32,396 +128,101 @@ static sqlite3_stmt *db_ip_rewrite_v4 = NULL;
 static sqlite3_stmt *db_ip_rewrite_v6 = NULL;
 ```
 
-**Performance:**
-- O(1) Lookups durch B-Tree Indizes
-- Prepared Statements für minimale Overhead
-- Cache-freundlich
+### dnsmasq.h (62 KB)
 
-### 2. `src/dnsmasq.h` (62 KB)
-**Hauptänderungen:**
-- Function Declarations für neue DB-Funktionen:
-  ```c
-  char* db_get_domain_alias(const char *source_domain);
-  char* db_get_rewrite_ipv4(const char *source_ipv4);
-  char* db_get_rewrite_ipv6(const char *source_ipv6);
-  ```
-
-- Aktualisierte Kommentare zur Schema-Version 6.2.1
-
-### 3. `src/rfc1035.c` (69 KB)
-**Hauptänderungen:**
-
-#### Domain Aliasing Integration (Zeilen 1683-1708)
-Integriert in `answer_request()` - wird bei jeder DNS-Query ausgeführt:
+**Neue Function Declarations:**
 ```c
-/* SQLite Domain Aliasing: Check for domain alias and add CNAME response */
-if (qclass == C_IN && qtype != T_PTR)
-{
-  char *alias_target = db_get_domain_alias(name);
-  if (alias_target)
-  {
-    /* Add CNAME record to response */
-    log_query(F_CONFIG | F_CNAME, name, NULL, "<alias>", 0);
-    if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
-                            daemon->local_ttl, &nameoffset,
-                            T_CNAME, C_IN, "d", alias_target))
-      anscount++;
-
-    /* Continue resolving alias target for A/AAAA queries */
-    if (qtype != T_CNAME && strlen(alias_target) < MAXDNAME)
-      strcpy(name, alias_target);
-
-    free(alias_target);
-  }
-}
+char* db_get_domain_alias(const char *source_domain);
+char* db_get_rewrite_ipv4(const char *source_ipv4);
+char* db_get_rewrite_ipv6(const char *source_ipv6);
 ```
 
-#### IP-Rewriting Integration (Zeilen 1035-1077)
-Integriert in `extract_addresses()` - wird bei DNS-Responses ausgeführt:
-```c
-/* SQLite IP-Rewriting: Check if IP should be rewritten */
-if (flags & F_IPV4)
-{
-  char ip_str[INET_ADDRSTRLEN];
-  if (inet_ntop(AF_INET, &addr.addr4, ip_str, sizeof(ip_str)))
-  {
-    char *rewrite_ip = db_get_rewrite_ipv4(ip_str);
-    if (rewrite_ip)
-    {
-      struct in_addr new_addr;
-      if (inet_pton(AF_INET, rewrite_ip, &new_addr) == 1)
-      {
-        addr.addr4 = new_addr;
-        /* Update packet to prevent cache inconsistency */
-        memcpy((void *)p1, &new_addr, INADDRSZ);
-        log_query(F_CONFIG | F_IPV4, name, &addr, rewrite_ip, 0);
-      }
-      free(rewrite_ip);
-    }
-  }
-}
-```
+**Schema-Version Update:** 6.2.1
 
-## Features im Detail
+### rfc1035.c (69 KB)
 
-### Feature 1: Domain Aliasing
+**Änderung 1: Domain Aliasing (Zeilen 1683-1708)**
+Integration in `answer_request()`:
+- Prüft domain_alias Tabelle bei jeder Query
+- Fügt CNAME-Record zur Response hinzu
+- Löst Alias-Ziel auf für A/AAAA Queries
 
-**Datenbank-Schema:**
-```sql
-CREATE TABLE IF NOT EXISTS domain_alias (
-    Source_Domain TEXT PRIMARY KEY,
-    Target_Domain TEXT NOT NULL
-) WITHOUT ROWID;
-```
+**Änderung 2: IP-Rewriting IPv4 (Zeilen 1036-1056)**
+Integration in `extract_addresses()`:
+- Prüft ip_rewrite_v4 Tabelle bei Response-Verarbeitung
+- Überschreibt IP im addr-Struct
+- Überschreibt IP im DNS-Paket (Cache-Konsistenz)
 
-**Beispiele:**
-```sql
-INSERT INTO domain_alias VALUES ('intel.com', 'keweon.center');
-INSERT INTO domain_alias VALUES ('malware.com', 'blocked.local');
-```
+**Änderung 3: IP-Rewriting IPv6 (Zeilen 1057-1077)**
+Integration in `extract_addresses()`:
+- Identisch zu IPv4, aber für IPv6-Adressen
 
-**Verhalten:**
-- Query: `intel.com` → CNAME: `intel.com` → `keweon.center`
-- Query: `www.intel.com` → CNAME: `www.intel.com` → `www.keweon.center` (automatisch!)
-- Query: `mail.intel.com` → CNAME: `mail.intel.com` → `mail.keweon.center` (automatisch!)
+## Use Cases
 
-**Wildcard-Logic:**
-1. Versuche Exact Match
-2. Wenn nicht gefunden: Extrahiere Parent Domain
-3. Prüfe Parent Domain
-4. Wenn gefunden: Preserve Subdomain-Prefix + Target Domain
+### Domain Aliasing
+- ✅ Malware/Phishing-Blocking (redirect zu blocked.local)
+- ✅ Domain-Migration (alte.domain → neue.domain)
+- ✅ Wildcard-Blocking (eine Regel → gesamte Domain-Familie)
+- ✅ Testing/Development
 
-**Use Cases:**
-- Malware/Phishing-Blocking (redirect zu blocked.local)
-- Domain-Migration (alte Domain → neue Domain)
-- Branding/Rebranding
-- Testing/Development
+### IP-Rewriting
+- ✅ NAT-Umgebungen (Public IP → Private IP)
+- ✅ Split-Horizon DNS
+- ✅ Private Netzwerk-Mapping
+- ✅ Development/Testing (Production IP → Dev IP)
 
-### Feature 2: IP-Rewriting (DNS-Doctoring)
+## Performance
 
-**Datenbank-Schema:**
-```sql
-CREATE TABLE IF NOT EXISTS ip_rewrite_v4 (
-    Source_IPv4 TEXT PRIMARY KEY,
-    Target_IPv4 TEXT NOT NULL
-) WITHOUT ROWID;
-
-CREATE TABLE IF NOT EXISTS ip_rewrite_v6 (
-    Source_IPv6 TEXT PRIMARY KEY,
-    Target_IPv6 TEXT NOT NULL
-) WITHOUT ROWID;
-```
-
-**Beispiele:**
-```sql
-INSERT INTO ip_rewrite_v4 VALUES ('178.223.16.21', '10.20.0.10');
-INSERT INTO ip_rewrite_v6 VALUES ('2001:4860:4860::8888', 'fd00::1');
-```
-
-**Verhalten:**
-- Upstream DNS antwortet: `example.com` → `178.223.16.21`
-- dnsmasq prüft `ip_rewrite_v4` Tabelle
-- Findet Regel: `178.223.16.21` → `10.20.0.10`
-- Überschreibt IP im DNS-Paket: `10.20.0.10`
-- Client erhält: `example.com` → `10.20.0.10`
-
-**Use Cases:**
-- NAT-Umgebungen (Public IP → Private IP)
-- Split-Horizon DNS
-- Private Netzwerk-Mapping
-- Development/Testing (Production IP → Dev IP)
-
-## Installation
-
-### Option 1: Dateien direkt kopieren
-```bash
-# Backup erstellen
-cp -r dnsmasq-2.91/src dnsmasq-2.91/src.backup
-
-# Patches anwenden
-cp Patches/dnsmasq-2.91/src/db.c dnsmasq-2.91/src/
-cp Patches/dnsmasq-2.91/src/dnsmasq.h dnsmasq-2.91/src/
-cp Patches/dnsmasq-2.91/src/rfc1035.c dnsmasq-2.91/src/
-
-# Neu kompilieren
-cd dnsmasq-2.91
-make clean
-make -j8
-```
-
-### Option 2: Git Patch erstellen
-```bash
-# Patch erstellen (falls Git verwendet wird)
-cd dnsmasq-2.91
-git diff > ../dnsmasq-sqlite-features.patch
-
-# Patch anwenden
-cd /path/to/clean/dnsmasq-2.91
-patch -p1 < dnsmasq-sqlite-features.patch
-```
-
-## Datenbank-Schema
-
-Das vollständige Schema ist in `Management_DB/Database_Creation/createdb-optimized.sh` dokumentiert.
-
-**Neue Tabellen:**
-- `domain_alias` - Domain-zu-Domain Aliasing
-- `ip_rewrite_v4` - IPv4-zu-IPv4 Rewriting
-- `ip_rewrite_v6` - IPv6-zu-IPv6 Rewriting
-
-**Bestehende Tabellen (bereits implementiert):**
-- `block_exact` - Exakte Domain-Blocks
-- `block_wildcard` - Wildcard Domain-Blocks
-- `block_regex` - Regex-basierte Blocks
-- `domain_dns_allow` - DNS-Forwarding Whitelist
-- `domain_dns_block` - DNS-Forwarding Blacklist
-- `fqdn_dns_allow` - FQDN Whitelist
-- `fqdn_dns_block` - FQDN Blacklist
-
-## Management-Skripte
-
-**Domain Aliasing:**
-```bash
-./manage-domain-alias.sh blocklist.db add intel.com keweon.center
-./manage-domain-alias.sh blocklist.db list
-./manage-domain-alias.sh blocklist.db remove intel.com
-```
-
-**IP-Rewriting:**
-```bash
-./manage-ip-rewrite.sh blocklist.db add-v4 178.223.16.21 10.20.0.10
-./manage-ip-rewrite.sh blocklist.db add-v6 2001:4860:4860::8888 fd00::1
-./manage-ip-rewrite.sh blocklist.db list-all
-```
+- **B-Tree Indizes** auf allen Primary Keys
+- **WITHOUT ROWID** Tabellen für bessere Performance
+- **Prepared Statements** (einmalig kompiliert, wiederverwendet)
+- **O(1) Lookups** für Exact Matches
+- **O(log n) Lookups** für Wildcard-Subdomain-Matching
 
 ## Testing
 
 Alle Features wurden umfassend getestet:
 
-### Test-Ergebnisse:
 ```
-Domain Aliasing:    5/5 Tests PASSED ✅
-IP-Rewriting:       7/7 Tests PASSED ✅
-Blocking:          11/11 Tests PASSED ✅
-─────────────────────────────────────
-TOTAL:             23/23 Tests PASSED ✅
+Domain Aliasing:  5/5 Tests PASSED ✅
+IP-Rewriting:     7/7 Tests PASSED ✅
+Blocking:        11/11 Tests PASSED ✅
+──────────────────────────────────────
+TOTAL:           23/23 Tests PASSED ✅
 ```
 
-### Test-Programme:
-- `/tmp/test-all-db-features.c` - Comprehensive DB feature tests
-- `/tmp/live-demo.c` - Live demonstration of all features
-
-## Performance
-
-**Optimierungen:**
-- B-Tree Indizes auf allen Primary Keys
-- WITHOUT ROWID Tabellen für bessere Performance
-- Prepared Statements (einmalig kompiliert, wiederverwendet)
-- O(1) Lookups für Exact Matches
-- O(log n) Lookups für Wildcard-Subdomain-Matching
-
-**Benchmarks:**
-- Domain Alias Lookup: < 0.1ms (Exact Match)
-- Domain Alias Lookup: < 0.2ms (Wildcard mit Subdomain)
-- IP-Rewrite Lookup: < 0.1ms
-- Datenbank-Größe: Skaliert auf 2+ Milliarden Einträge
+Test-Programme verfügbar im Hauptverzeichnis.
 
 ## Commits
 
 Diese Patches basieren auf folgenden Commits:
 
-1. **bfa089e** - Fix: Integrate Domain Aliasing into DNS query flow
-   - Integration in `answer_request()` Funktion
-   - CNAME-Response-Generierung
-   - Wildcard-Subdomain-Preservation
-
-2. **39bacf6** - Implement IP-Rewriting (IPv4 & IPv6) in DNS response flow
-   - Integration in `extract_addresses()` Funktion
-   - IP-Überschreibung im DNS-Paket
-   - Cache-Konsistenz gewährleistet
+- **bfa089e** - Fix: Integrate Domain Aliasing into DNS query flow
+- **39bacf6** - Implement IP-Rewriting (IPv4 & IPv6) in DNS response flow
+- **afdf6ff** - Add: Patches directory with all modified dnsmasq files
 
 ## Kompatibilität
 
 - **dnsmasq Version:** 2.91
 - **SQLite Version:** 3.x+
-- **Plattformen:** Linux (getestet)
+- **Plattformen:** Linux
 - **Compiler:** GCC, Clang
 
-## Dokumentation
+## Weitere Dokumentation
 
-Ausführliche Dokumentation der Features:
+Vollständige Dokumentation im Hauptverzeichnis:
 - `Docs/DOMAIN-ALIAS.md` - Domain Aliasing Feature
 - `Docs/IP-REWRITE.md` - IP-Rewriting Feature
-- `Docs/SCHEMA.md` - Vollständige Datenbank-Schema-Dokumentation
+- `Management_DB/Database_Creation/createdb-optimized.sh` - Schema 6.2.1
+- `manage-domain-alias.sh` - Management-Tool
+- `manage-ip-rewrite.sh` - Management-Tool
 
 ## Lizenz
 
 Diese Patches sind kompatibel mit der dnsmasq GPLv2 Lizenz.
-
-## Support
-
-Bei Fragen oder Problemen siehe:
-- Dokumentation in `Docs/`
-- Test-Programme in `/tmp/`
-- Management-Skripte in Repository-Root
 
 ---
 
 **Version:** 6.2.1
 **Letzte Aktualisierung:** 2025-11-14
 **Status:** Production Ready ✅
-
-## Patches Verzeichnis-Struktur
-
-```
-Patches/
-├── README.md                           # Diese Datei
-├── CHANGES.txt                         # Changelog
-├── FILE-SUMMARY.txt                    # Technische Details
-│
-├── dnsmasq-2.91/
-│   └── src/
-│       ├── db.c                        # SQLite DB-Funktionen
-│       ├── dnsmasq.h                   # Header mit Function Declarations
-│       └── rfc1035.c                   # DNS Query/Response Integration
-│
-├── Docs/
-│   ├── DOMAIN-ALIAS.md                 # Domain Aliasing Dokumentation
-│   └── IP-REWRITE.md                   # IP-Rewriting Dokumentation
-│
-├── Management_Scripts/
-│   ├── manage-domain-alias.sh          # Domain Alias Management
-│   └── manage-ip-rewrite.sh            # IP-Rewrite Management
-│
-├── Management_DB/
-│   └── Database_Creation/
-│       └── createdb-optimized.sh       # Datenbank-Erstellung (Schema 6.2.1)
-│
-└── Performance_Testing/
-    ├── performance-benchmark.c         # Performance Benchmark Tool
-    └── run-performance-report.sh       # Automated Performance Reports
-```
-
-## Vollständige Installation
-
-### Schritt 1: dnsmasq Patches anwenden
-```bash
-# Backup
-cp -r dnsmasq-2.91/src dnsmasq-2.91/src.backup
-
-# Patches anwenden
-cp Patches/dnsmasq-2.91/src/*.c dnsmasq-2.91/src/
-cp Patches/dnsmasq-2.91/src/*.h dnsmasq-2.91/src/
-
-# Kompilieren
-cd dnsmasq-2.91
-make clean
-make -j8
-sudo make install
-```
-
-### Schritt 2: Datenbank erstellen
-```bash
-# Management-Skripte installieren
-cp Patches/Management_DB/Database_Creation/createdb-optimized.sh .
-cp Patches/Management_Scripts/*.sh .
-chmod +x *.sh
-
-# Datenbank erstellen
-./createdb-optimized.sh /var/lib/dnsmasq/blocklist.db
-
-# Domain Alias hinzufügen
-./manage-domain-alias.sh /var/lib/dnsmasq/blocklist.db add intel.com keweon.center
-
-# IP-Rewrite Regel hinzufügen
-./manage-ip-rewrite.sh /var/lib/dnsmasq/blocklist.db add-v4 178.223.16.21 10.20.0.10
-```
-
-### Schritt 3: dnsmasq konfigurieren
-```bash
-# /etc/dnsmasq.conf
-db-file=/var/lib/dnsmasq/blocklist.db
-log-queries
-```
-
-### Schritt 4: Performance testen (optional)
-```bash
-gcc -o performance-benchmark Patches/Performance_Testing/performance-benchmark.c -lsqlite3
-./performance-benchmark /var/lib/dnsmasq/blocklist.db
-
-# Oder automatisiert:
-./Patches/Performance_Testing/run-performance-report.sh /var/lib/dnsmasq/blocklist.db
-```
-
-## Dateien im Detail
-
-### dnsmasq Source-Patches
-| Datei | Größe | Beschreibung |
-|-------|-------|--------------|
-| `db.c` | 42 KB | SQLite DB-Funktionen inkl. Domain Aliasing & IP-Rewriting |
-| `dnsmasq.h` | 62 KB | Function Declarations für neue Features |
-| `rfc1035.c` | 69 KB | Integration in DNS Query/Response Flow |
-
-### Dokumentation
-| Datei | Beschreibung |
-|-------|--------------|
-| `DOMAIN-ALIAS.md` | Vollständige Dokumentation des Domain Aliasing Features |
-| `IP-REWRITE.md` | Vollständige Dokumentation des IP-Rewriting Features |
-
-### Management-Skripte
-| Datei | Beschreibung |
-|-------|--------------|
-| `manage-domain-alias.sh` | Add/Remove/List/Test Domain Aliases |
-| `manage-ip-rewrite.sh` | Add/Remove/List/Test IPv4/IPv6 Rewrites |
-
-### Datenbank
-| Datei | Beschreibung |
-|-------|--------------|
-| `createdb-optimized.sh` | Erstellt optimierte SQLite DB mit Schema 6.2.1 |
-
-### Performance Testing
-| Datei | Beschreibung |
-|-------|--------------|
-| `performance-benchmark.c` | C-Programm für Performance-Tests |
-| `run-performance-report.sh` | Automatisierte Performance-Reports |
-

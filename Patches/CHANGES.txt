@@ -6,7 +6,7 @@ Version: 6.2.1
 Datum: 2025-11-14
 
 ===============================================================================
-GEÄNDERTE DATEIEN
+GEÄNDERTE DNSMASQ-DATEIEN
 ===============================================================================
 
 1. src/db.c (42 KB)
@@ -32,9 +32,8 @@ NEUE FEATURES
 
 FEATURE 1: Domain Aliasing (CNAME-Redirects)
 ---------------------------------------------
-- Datenbank-Tabelle: domain_alias
-- Wildcard-Subdomain-Support automatisch
-- Use Cases: Malware-Blocking, Domain-Migration, Rebranding
+Datenbank-Tabelle: domain_alias
+Wildcard-Subdomain-Support: Automatisch
 
 Beispiel:
   DB: intel.com → keweon.center
@@ -45,9 +44,7 @@ Beispiel:
 
 FEATURE 2: IP-Rewriting (DNS-Doctoring)
 ----------------------------------------
-- Datenbank-Tabellen: ip_rewrite_v4, ip_rewrite_v6
-- Transparente IP-Überschreibung in DNS-Responses
-- Use Cases: NAT, Split-Horizon DNS, Dev/Prod-Umgebungen
+Datenbank-Tabellen: ip_rewrite_v4, ip_rewrite_v6
 
 Beispiel:
   DB: 178.223.16.21 → 10.20.0.10
@@ -93,7 +90,7 @@ Zeilen 1035-1077: IP-Rewriting in extract_addresses()
   - Logging der Rewrites
 
 ===============================================================================
-DATENBANK-SCHEMA
+DATENBANK-SCHEMA (Schema 6.2.1)
 ===============================================================================
 
 Neue Tabellen:
@@ -140,10 +137,6 @@ Test-Ergebnisse:
   ────────────────────────────────────
   TOTAL:           23/23 Tests PASSED ✅
 
-Test-Programme:
-- /tmp/test-all-db-features.c - Comprehensive tests
-- /tmp/live-demo.c - Live demonstration
-
 ===============================================================================
 INSTALLATION
 ===============================================================================
@@ -152,28 +145,14 @@ INSTALLATION
    cp -r dnsmasq-2.91/src dnsmasq-2.91/src.backup
 
 2. Patches anwenden:
-   cp Patches/dnsmasq-2.91/src/*.c dnsmasq-2.91/src/
-   cp Patches/dnsmasq-2.91/src/*.h dnsmasq-2.91/src/
+   cp Patches/dnsmasq-2.91/src/db.c dnsmasq-2.91/src/
+   cp Patches/dnsmasq-2.91/src/dnsmasq.h dnsmasq-2.91/src/
+   cp Patches/dnsmasq-2.91/src/rfc1035.c dnsmasq-2.91/src/
 
 3. Kompilieren:
    cd dnsmasq-2.91
    make clean
    make -j8
-
-4. Datenbank erstellen:
-   ./Management_DB/Database_Creation/createdb-optimized.sh
-
-===============================================================================
-MANAGEMENT
-===============================================================================
-
-Domain Aliasing:
-  ./manage-domain-alias.sh blocklist.db add intel.com keweon.center
-  ./manage-domain-alias.sh blocklist.db list
-
-IP-Rewriting:
-  ./manage-ip-rewrite.sh blocklist.db add-v4 178.223.16.21 10.20.0.10
-  ./manage-ip-rewrite.sh blocklist.db list-all
 
 ===============================================================================
 COMMITS
@@ -188,6 +167,11 @@ bfa089e - Fix: Integrate Domain Aliasing into DNS query flow
   - Integration in extract_addresses()
   - IP-Überschreibung im DNS-Paket
   - Cache-Konsistenz
+
+afdf6ff - Add: Patches directory with all modified dnsmasq files
+  - Erstellt Patches-Verzeichnis
+  - Kopiert alle geänderten dnsmasq-Dateien
+  - Dokumentation hinzugefügt
 
 ===============================================================================
 STATUS
