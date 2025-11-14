@@ -19,7 +19,8 @@ static sqlite3_stmt *db_block_exact = NULL;      /* For exact matching → IPSet
 static sqlite3_stmt *db_block_wildcard = NULL;   /* For wildcard matching → IPSetDNSBlock */
 static sqlite3_stmt *db_fqdn_dns_allow = NULL;   /* For DNS allow (whitelist) → IPSetDNSAllow */
 static sqlite3_stmt *db_fqdn_dns_block = NULL;   /* For DNS block (blacklist) → IPSetDNSBlock */
-static sqlite3_stmt *db_dns_rewrite = NULL;      /* For DNS Doctoring → IPSetRewrite (IP rewrite) */
+static sqlite3_stmt *db_ip_rewrite_v4 = NULL;    /* For IPv4 IP rewriting (source → target) */
+static sqlite3_stmt *db_ip_rewrite_v6 = NULL;    /* For IPv6 IP rewriting (source → target) */
 static char *db_file = NULL;
 
 /* IPSet configurations (comma-separated strings from config) */
@@ -47,8 +48,6 @@ static char *ipset_dns_allow = NULL;     /* Real DNS servers (with port): "8.8.8
 typedef struct lru_entry {
   char domain[256];              /* Domain name */
   int ipset_type;                /* Cached result */
-  char ipv4[46];                 /* Cached IPv4 for IPSET_TYPE_REWRITE */
-  char ipv6[46];                 /* Cached IPv6 for IPSET_TYPE_REWRITE */
   unsigned long hits;            /* Access counter for stats */
   struct lru_entry *prev;        /* Doubly-linked list for LRU */
   struct lru_entry *next;        /* Doubly-linked list for LRU */
@@ -301,18 +300,29 @@ void db_init(void)
     NULL
   );
 
-  /* Step 2a: dns_rewrite (Domain, IPv4, IPv6) → IPSetRewrite
-   * DNS Doctoring: Rewrite DNS response to custom IPs
-   * Example: internal.example.com → 10.0.0.50 (IPv4), fd00::50 (IPv6)
-   * Use Case: NAT, internal network redirection, split-horizon DNS
-   * Returns: Custom IPv4 and IPv6 addresses for the domain
-   * Priority: Checked after block_exact, before block_wildcard
+  /* IP Rewriting: IPv4 address translation
+   * Applied AFTER DNS resolution to rewrite response IPs
+   * Example: DNS returns 178.223.16.21 → rewrite to 10.20.0.10
+   * Use Case: NAT, private network mapping
    */
   sqlite3_prepare(
     db,
-    "SELECT Domain, IPv4, IPv6 FROM dns_rewrite WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
+    "SELECT Target_IPv4 FROM ip_rewrite_v4 WHERE Source_IPv4 = ?",
     -1,
-    &db_dns_rewrite,
+    &db_ip_rewrite_v4,
+    NULL
+  );
+
+  /* IP Rewriting: IPv6 address translation
+   * Applied AFTER DNS resolution to rewrite response IPs
+   * Example: DNS returns 2001:db8::1 → rewrite to fd00::10
+   * Use Case: IPv6 NAT, ULA mapping
+   */
+  sqlite3_prepare(
+    db,
+    "SELECT Target_IPv6 FROM ip_rewrite_v6 WHERE Source_IPv6 = ?",
+    -1,
+    &db_ip_rewrite_v6,
     NULL
   );
 
@@ -403,10 +413,16 @@ void db_cleanup(void)
     db_block_wildcard = NULL;
   }
 
-  if (db_dns_rewrite)
+  if (db_ip_rewrite_v4)
   {
-    sqlite3_finalize(db_dns_rewrite);
-    db_dns_rewrite = NULL;
+    sqlite3_finalize(db_ip_rewrite_v4);
+    db_ip_rewrite_v4 = NULL;
+  }
+
+  if (db_ip_rewrite_v6)
+  {
+    sqlite3_finalize(db_ip_rewrite_v6);
+    db_ip_rewrite_v6 = NULL;
   }
 
   if (db_fqdn_dns_allow)
@@ -849,92 +865,6 @@ int db_lookup_domain(const char *name)
 
 step3:
 
-  /* Step 2a: Check dns_rewrite (DNS Doctoring) */
-  if (db_dns_rewrite)
-  {
-    sqlite3_reset(db_dns_rewrite);
-    if (sqlite3_bind_text(db_dns_rewrite, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK &&
-        sqlite3_bind_text(db_dns_rewrite, 2, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
-    {
-      if (sqlite3_step(db_dns_rewrite) == SQLITE_ROW)
-      {
-        const unsigned char *matched_domain = sqlite3_column_text(db_dns_rewrite, 0);
-        const unsigned char *ipv4 = sqlite3_column_text(db_dns_rewrite, 1);
-        const unsigned char *ipv6 = sqlite3_column_text(db_dns_rewrite, 2);
-
-        printf("db_lookup: %s matched dns_rewrite '%s' → REWRITE IPv4=%s IPv6=%s\n",
-               name,
-               matched_domain ? (const char *)matched_domain : "?",
-               ipv4 ? (const char *)ipv4 : "NULL",
-               ipv6 ? (const char *)ipv6 : "NULL");
-
-        result = IPSET_TYPE_REWRITE;
-
-        /* Cache the IPs in LRU (we'll need a special version of lru_put for this) */
-        lru_entry_t *entry = lru_get(name);
-        if (!entry)
-        {
-          /* Create new entry with rewrite IPs */
-          if (lru_count >= LRU_CACHE_SIZE)
-            lru_evict_lru();
-
-          entry = malloc(sizeof(lru_entry_t));
-          if (entry)
-          {
-            // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-            strncpy(entry->domain, name, sizeof(entry->domain) - 1);
-            entry->domain[sizeof(entry->domain) - 1] = '\0';
-            entry->ipset_type = IPSET_TYPE_REWRITE;
-
-            /* Store rewrite IPs in cache */
-            if (ipv4)
-            {
-              // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-              strncpy(entry->ipv4, (const char *)ipv4, sizeof(entry->ipv4) - 1);
-              entry->ipv4[sizeof(entry->ipv4) - 1] = '\0';
-            }
-            else
-            {
-              entry->ipv4[0] = '\0';
-            }
-
-            if (ipv6)
-            {
-              // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-              strncpy(entry->ipv6, (const char *)ipv6, sizeof(entry->ipv6) - 1);
-              entry->ipv6[sizeof(entry->ipv6) - 1] = '\0';
-            }
-            else
-            {
-              entry->ipv6[0] = '\0';
-            }
-
-            entry->hits = 1;
-            entry->prev = NULL;
-            entry->next = lru_head;
-            entry->hash_next = NULL;
-
-            if (lru_head)
-              lru_head->prev = entry;
-            lru_head = entry;
-
-            if (!lru_tail)
-              lru_tail = entry;
-
-            /* Add to hash table */
-            unsigned int hash = lru_hash_func(name);
-            entry->hash_next = lru_hash[hash];
-            lru_hash[hash] = entry;
-
-            lru_count++;
-          }
-        }
-
-        return result;
-      }
-    }
-  }
-
   /* Step 3: Check block_wildcard */
   if (db_block_wildcard)
   {
@@ -1023,56 +953,62 @@ struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6)  // NOLINT
   }
 }
 
-/* DNS Doctoring: Get rewritten IPs for a domain
- * Returns: 1 if domain has rewrite rules, 0 if not found
- * ipv4_out and ipv6_out are set to allocated strings (caller must free)
+/* IP Rewriting: Get target IPv4 for source IPv4
+ * Applied AFTER DNS resolution to rewrite response IPs
+ * Example: source_ipv4="178.223.16.21" → returns "10.20.0.10"
+ * Returns: Allocated string with target IP (caller must free) or NULL if no rewrite
  */
-int db_get_rewrite_ips(const char *domain, char **ipv4_out, char **ipv6_out)
+char* db_get_rewrite_ipv4(const char *source_ipv4)
 {
   db_init();
 
-  if (!db || !db_dns_rewrite)
-    return 0;
+  if (!db || !db_ip_rewrite_v4 || !source_ipv4)
+    return NULL;
 
-  /* Initialize outputs */
-  if (ipv4_out)
-    *ipv4_out = NULL;
-  if (ipv6_out)
-    *ipv6_out = NULL;
+  sqlite3_reset(db_ip_rewrite_v4);
+  if (sqlite3_bind_text(db_ip_rewrite_v4, 1, source_ipv4, -1, SQLITE_TRANSIENT) != SQLITE_OK)
+    return NULL;
 
-  /* Check LRU cache first */
-  lru_entry_t *cached = lru_get(domain);
-  if (cached && cached->ipset_type == IPSET_TYPE_REWRITE)
+  if (sqlite3_step(db_ip_rewrite_v4) == SQLITE_ROW)
   {
-    if (ipv4_out && cached->ipv4[0] != '\0')
-      *ipv4_out = strdup(cached->ipv4);
-    if (ipv6_out && cached->ipv6[0] != '\0')
-      *ipv6_out = strdup(cached->ipv6);
-    return 1;
+    const unsigned char *target_ip = sqlite3_column_text(db_ip_rewrite_v4, 0);
+    if (target_ip)
+    {
+      printf("IP Rewrite v4: %s → %s\n", source_ipv4, (const char *)target_ip);
+      return strdup((const char *)target_ip);
+    }
   }
 
-  /* Query database */
-  sqlite3_reset(db_dns_rewrite);
-  if (sqlite3_bind_text(db_dns_rewrite, 1, domain, -1, SQLITE_TRANSIENT) != SQLITE_OK ||
-      sqlite3_bind_text(db_dns_rewrite, 2, domain, -1, SQLITE_TRANSIENT) != SQLITE_OK)
+  return NULL;
+}
+
+/* IP Rewriting: Get target IPv6 for source IPv6
+ * Applied AFTER DNS resolution to rewrite response IPs
+ * Example: source_ipv6="2001:db8::1" → returns "fd00::10"
+ * Returns: Allocated string with target IP (caller must free) or NULL if no rewrite
+ */
+char* db_get_rewrite_ipv6(const char *source_ipv6)
+{
+  db_init();
+
+  if (!db || !db_ip_rewrite_v6 || !source_ipv6)
+    return NULL;
+
+  sqlite3_reset(db_ip_rewrite_v6);
+  if (sqlite3_bind_text(db_ip_rewrite_v6, 1, source_ipv6, -1, SQLITE_TRANSIENT) != SQLITE_OK)
+    return NULL;
+
+  if (sqlite3_step(db_ip_rewrite_v6) == SQLITE_ROW)
   {
-    return 0;
+    const unsigned char *target_ip = sqlite3_column_text(db_ip_rewrite_v6, 0);
+    if (target_ip)
+    {
+      printf("IP Rewrite v6: %s → %s\n", source_ipv6, (const char *)target_ip);
+      return strdup((const char *)target_ip);
+    }
   }
 
-  if (sqlite3_step(db_dns_rewrite) == SQLITE_ROW)
-  {
-    const unsigned char *ipv4 = sqlite3_column_text(db_dns_rewrite, 1);
-    const unsigned char *ipv6 = sqlite3_column_text(db_dns_rewrite, 2);
-
-    if (ipv4_out && ipv4)
-      *ipv4_out = strdup((const char *)ipv4);
-    if (ipv6_out && ipv6)
-      *ipv6_out = strdup((const char *)ipv6);
-
-    return 1;
-  }
-
-  return 0;
+  return NULL;
 }
 
 /* Legacy functions for backward compatibility with old blocking code

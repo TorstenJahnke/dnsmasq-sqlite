@@ -48,10 +48,11 @@ sqlite3 "$DB_FILE" <<'EOF'
 -- LOOKUP ORDER (sequential):
 -- 1. block_regex      → IPSetTerminate (IPv4 + IPv6 direct response)
 -- 2. block_exact      → IPSetTerminate (IPv4 + IPv6 direct response)
--- 2a. dns_rewrite     → IPSetRewrite (DNS Doctoring: IP rewrite)
 -- 3. block_wildcard   → IPSetDNSBlock (DNS Forward to blocker)
 -- 4. fqdn_dns_allow   → IPSetDNSAllow (DNS Forward to real DNS)
 -- 5. fqdn_dns_block   → IPSetDNSBlock (DNS Forward to blocker)
+-- 6. Normal DNS resolution
+-- 7. ip_rewrite_v4/v6 → Rewrite IPs in DNS response (AFTER resolution!)
 -- ============================================================================
 
 -- ============================================================================
@@ -97,25 +98,36 @@ CREATE INDEX IF NOT EXISTS idx_block_exact_covering
 ON block_exact(Domain);
 
 -- ----------------------------------------------------------------------------
--- Table 2a: dns_rewrite - DNS Doctoring (IP Rewrite)
--- Domain matched → return custom IPv4/IPv6 addresses (IP rewriting)
--- Example: internal.example.com → 10.0.0.50 (IPv4), fd00::50 (IPv6)
--- Use Case: NAT, split-horizon DNS, internal network redirection
--- Priority: Checked after block_exact, before block_wildcard
+-- Table 2a: ip_rewrite_v4 - IPv4 Address Rewriting (DNS Doctoring)
+-- Rewrites source IPs in DNS responses to target IPs
+-- Example: DNS returns 178.223.16.21 → Rewrite to 10.20.0.10
+-- Use Case: NAT, private network mapping, IP address translation
+-- Applied AFTER DNS resolution, before returning answer to client
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS dns_rewrite (
-    Domain TEXT PRIMARY KEY,
-    IPv4 TEXT,
-    IPv6 TEXT
+CREATE TABLE IF NOT EXISTS ip_rewrite_v4 (
+    Source_IPv4 TEXT PRIMARY KEY,
+    Target_IPv4 TEXT NOT NULL
 ) WITHOUT ROWID;
 
--- Covering Index (optimized for exact + wildcard lookups)
-CREATE INDEX IF NOT EXISTS idx_dns_rewrite_covering
-ON dns_rewrite(Domain, IPv4, IPv6);
+-- Index for fast lookups during DNS response processing
+CREATE INDEX IF NOT EXISTS idx_ip_rewrite_v4_source
+ON ip_rewrite_v4(Source_IPv4);
 
--- Index for wildcard matching (LIKE queries)
-CREATE INDEX IF NOT EXISTS idx_dns_rewrite_like
-ON dns_rewrite(Domain COLLATE RTRIM);
+-- ----------------------------------------------------------------------------
+-- Table 2b: ip_rewrite_v6 - IPv6 Address Rewriting (DNS Doctoring)
+-- Rewrites source IPs in DNS responses to target IPs
+-- Example: DNS returns 2001:db8::1 → Rewrite to fd00::10
+-- Use Case: IPv6 NAT, ULA mapping, IPv6 address translation
+-- Applied AFTER DNS resolution, before returning answer to client
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ip_rewrite_v6 (
+    Source_IPv6 TEXT PRIMARY KEY,
+    Target_IPv6 TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- Index for fast lookups during DNS response processing
+CREATE INDEX IF NOT EXISTS idx_ip_rewrite_v6_source
+ON ip_rewrite_v6(Source_IPv6);
 
 -- ----------------------------------------------------------------------------
 -- Table 3: block_wildcard - Wildcard Domain Match (includes subdomains!)
@@ -232,9 +244,10 @@ INSERT OR REPLACE INTO db_metadata (key, value) VALUES
     ('cache_size_gb', '80'),
     ('mmap_size_gb', '2'),
     ('max_domains', '1000000000'),
-    ('features', 'without_rowid,covering_indexes,mmap,wal,dns_forwarding,dns_doctoring,threads-8,ipsets'),
-    ('ipsets', 'IPSetTerminate,IPSetDNSBlock,IPSetDNSAllow,IPSetRewrite'),
-    ('lookup_order', '1:block_regex,2:block_exact,2a:dns_rewrite,3:block_wildcard,4:fqdn_dns_allow,5:fqdn_dns_block'),
+    ('features', 'without_rowid,covering_indexes,mmap,wal,dns_forwarding,ip_rewrite,threads-8,ipsets'),
+    ('ipsets', 'IPSetTerminate,IPSetDNSBlock,IPSetDNSAllow'),
+    ('lookup_order', '1:block_regex,2:block_exact,3:block_wildcard,4:fqdn_dns_allow,5:fqdn_dns_block,6:normal_dns,7:ip_rewrite'),
+    ('ip_rewrite', 'ip_rewrite_v4,ip_rewrite_v6'),
     ('ipv6_first', 'true');
 
 EOF
