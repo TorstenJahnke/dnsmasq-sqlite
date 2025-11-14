@@ -310,3 +310,118 @@ Bei Fragen oder Problemen siehe:
 **Version:** 6.2.1
 **Letzte Aktualisierung:** 2025-11-14
 **Status:** Production Ready ✅
+
+## Patches Verzeichnis-Struktur
+
+```
+Patches/
+├── README.md                           # Diese Datei
+├── CHANGES.txt                         # Changelog
+├── FILE-SUMMARY.txt                    # Technische Details
+│
+├── dnsmasq-2.91/
+│   └── src/
+│       ├── db.c                        # SQLite DB-Funktionen
+│       ├── dnsmasq.h                   # Header mit Function Declarations
+│       └── rfc1035.c                   # DNS Query/Response Integration
+│
+├── Docs/
+│   ├── DOMAIN-ALIAS.md                 # Domain Aliasing Dokumentation
+│   └── IP-REWRITE.md                   # IP-Rewriting Dokumentation
+│
+├── Management_Scripts/
+│   ├── manage-domain-alias.sh          # Domain Alias Management
+│   └── manage-ip-rewrite.sh            # IP-Rewrite Management
+│
+├── Management_DB/
+│   └── Database_Creation/
+│       └── createdb-optimized.sh       # Datenbank-Erstellung (Schema 6.2.1)
+│
+└── Performance_Testing/
+    ├── performance-benchmark.c         # Performance Benchmark Tool
+    └── run-performance-report.sh       # Automated Performance Reports
+```
+
+## Vollständige Installation
+
+### Schritt 1: dnsmasq Patches anwenden
+```bash
+# Backup
+cp -r dnsmasq-2.91/src dnsmasq-2.91/src.backup
+
+# Patches anwenden
+cp Patches/dnsmasq-2.91/src/*.c dnsmasq-2.91/src/
+cp Patches/dnsmasq-2.91/src/*.h dnsmasq-2.91/src/
+
+# Kompilieren
+cd dnsmasq-2.91
+make clean
+make -j8
+sudo make install
+```
+
+### Schritt 2: Datenbank erstellen
+```bash
+# Management-Skripte installieren
+cp Patches/Management_DB/Database_Creation/createdb-optimized.sh .
+cp Patches/Management_Scripts/*.sh .
+chmod +x *.sh
+
+# Datenbank erstellen
+./createdb-optimized.sh /var/lib/dnsmasq/blocklist.db
+
+# Domain Alias hinzufügen
+./manage-domain-alias.sh /var/lib/dnsmasq/blocklist.db add intel.com keweon.center
+
+# IP-Rewrite Regel hinzufügen
+./manage-ip-rewrite.sh /var/lib/dnsmasq/blocklist.db add-v4 178.223.16.21 10.20.0.10
+```
+
+### Schritt 3: dnsmasq konfigurieren
+```bash
+# /etc/dnsmasq.conf
+db-file=/var/lib/dnsmasq/blocklist.db
+log-queries
+```
+
+### Schritt 4: Performance testen (optional)
+```bash
+gcc -o performance-benchmark Patches/Performance_Testing/performance-benchmark.c -lsqlite3
+./performance-benchmark /var/lib/dnsmasq/blocklist.db
+
+# Oder automatisiert:
+./Patches/Performance_Testing/run-performance-report.sh /var/lib/dnsmasq/blocklist.db
+```
+
+## Dateien im Detail
+
+### dnsmasq Source-Patches
+| Datei | Größe | Beschreibung |
+|-------|-------|--------------|
+| `db.c` | 42 KB | SQLite DB-Funktionen inkl. Domain Aliasing & IP-Rewriting |
+| `dnsmasq.h` | 62 KB | Function Declarations für neue Features |
+| `rfc1035.c` | 69 KB | Integration in DNS Query/Response Flow |
+
+### Dokumentation
+| Datei | Beschreibung |
+|-------|--------------|
+| `DOMAIN-ALIAS.md` | Vollständige Dokumentation des Domain Aliasing Features |
+| `IP-REWRITE.md` | Vollständige Dokumentation des IP-Rewriting Features |
+
+### Management-Skripte
+| Datei | Beschreibung |
+|-------|--------------|
+| `manage-domain-alias.sh` | Add/Remove/List/Test Domain Aliases |
+| `manage-ip-rewrite.sh` | Add/Remove/List/Test IPv4/IPv6 Rewrites |
+
+### Datenbank
+| Datei | Beschreibung |
+|-------|--------------|
+| `createdb-optimized.sh` | Erstellt optimierte SQLite DB mit Schema 6.2.1 |
+
+### Performance Testing
+| Datei | Beschreibung |
+|-------|--------------|
+| `performance-benchmark.c` | C-Programm für Performance-Tests |
+| `run-performance-report.sh` | Automatisierte Performance-Reports |
+
