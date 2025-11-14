@@ -1031,7 +1031,51 @@ int extract_addresses(struct dns_header *header, size_t qlen, char *name, time_t
 		  if (!CHECK_LEN(header, p1, qlen, addrlen))
 		    return 2; /* bad packet */
 		  memcpy(&addr, p1, addrlen);
-		  
+
+		  /* SQLite IP-Rewriting: Check if IP should be rewritten */
+		  if (flags & F_IPV4)
+		    {
+		      char ip_str[INET_ADDRSTRLEN];
+		      if (inet_ntop(AF_INET, &addr.addr4, ip_str, sizeof(ip_str)))
+			{
+			  char *rewrite_ip = db_get_rewrite_ipv4(ip_str);
+			  if (rewrite_ip)
+			    {
+			      struct in_addr new_addr;
+			      if (inet_pton(AF_INET, rewrite_ip, &new_addr) == 1)
+				{
+				  log_query(F_CONFIG | F_IPV4, name, &addr, "<IP-Rewrite>", 0);
+				  addr.addr4 = new_addr;
+				  /* Also update the packet to prevent cache inconsistency */
+				  memcpy((void *)p1, &new_addr, INADDRSZ);
+				  log_query(F_CONFIG | F_IPV4, name, &addr, rewrite_ip, 0);
+				}
+			      free(rewrite_ip);
+			    }
+			}
+		    }
+		  else if (flags & F_IPV6)
+		    {
+		      char ip_str[INET6_ADDRSTRLEN];
+		      if (inet_ntop(AF_INET6, &addr.addr6, ip_str, sizeof(ip_str)))
+			{
+			  char *rewrite_ip = db_get_rewrite_ipv6(ip_str);
+			  if (rewrite_ip)
+			    {
+			      struct in6_addr new_addr;
+			      if (inet_pton(AF_INET6, rewrite_ip, &new_addr) == 1)
+				{
+				  log_query(F_CONFIG | F_IPV6, name, &addr, "<IP-Rewrite>", 0);
+				  addr.addr6 = new_addr;
+				  /* Also update the packet to prevent cache inconsistency */
+				  memcpy((void *)p1, &new_addr, IN6ADDRSZ);
+				  log_query(F_CONFIG | F_IPV6, name, &addr, rewrite_ip, 0);
+				}
+			      free(rewrite_ip);
+			    }
+			}
+		    }
+
 		  /* check for returned address in private space */
 		  if (check_rebind)
 		    {
