@@ -16,6 +16,7 @@
 static sqlite3 *db = NULL;
 static sqlite3_stmt *db_block_regex = NULL;      /* For regex pattern matching → IPSetTerminate */
 static sqlite3_stmt *db_block_exact = NULL;      /* For exact matching → IPSetTerminate */
+static sqlite3_stmt *db_domain_alias = NULL;     /* For domain aliasing (domain → domain) */
 static sqlite3_stmt *db_block_wildcard = NULL;   /* For wildcard matching → IPSetDNSBlock */
 static sqlite3_stmt *db_fqdn_dns_allow = NULL;   /* For DNS allow (whitelist) → IPSetDNSAllow */
 static sqlite3_stmt *db_fqdn_dns_block = NULL;   /* For DNS block (blacklist) → IPSetDNSBlock */
@@ -300,6 +301,19 @@ void db_init(void)
     NULL
   );
 
+  /* Domain Aliasing: Redirect domain queries
+   * Applied BEFORE DNS resolution
+   * Example: old.domain.com → new.domain.com
+   * Use Case: CNAME-like functionality, domain redirection
+   */
+  sqlite3_prepare(
+    db,
+    "SELECT Target_Domain FROM domain_alias WHERE Source_Domain = ?",
+    -1,
+    &db_domain_alias,
+    NULL
+  );
+
   /* IP Rewriting: IPv4 address translation
    * Applied AFTER DNS resolution to rewrite response IPs
    * Example: DNS returns 178.223.16.21 → rewrite to 10.20.0.10
@@ -411,6 +425,12 @@ void db_cleanup(void)
   {
     sqlite3_finalize(db_block_wildcard);
     db_block_wildcard = NULL;
+  }
+
+  if (db_domain_alias)
+  {
+    sqlite3_finalize(db_domain_alias);
+    db_domain_alias = NULL;
   }
 
   if (db_ip_rewrite_v4)
@@ -951,6 +971,35 @@ struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6)  // NOLINT
     default:
       return NULL;
   }
+}
+
+/* Domain Aliasing: Get target domain for source domain
+ * Applied BEFORE DNS resolution (resolves alias instead of source)
+ * Example: source_domain="old.domain.com" → returns "new.domain.com"
+ * Returns: Allocated string with target domain (caller must free) or NULL if no alias
+ */
+char* db_get_domain_alias(const char *source_domain)
+{
+  db_init();
+
+  if (!db || !db_domain_alias || !source_domain)
+    return NULL;
+
+  sqlite3_reset(db_domain_alias);
+  if (sqlite3_bind_text(db_domain_alias, 1, source_domain, -1, SQLITE_TRANSIENT) != SQLITE_OK)
+    return NULL;
+
+  if (sqlite3_step(db_domain_alias) == SQLITE_ROW)
+  {
+    const unsigned char *target_domain = sqlite3_column_text(db_domain_alias, 0);
+    if (target_domain)
+    {
+      printf("Domain Alias: %s → %s\n", source_domain, (const char *)target_domain);
+      return strdup((const char *)target_domain);
+    }
+  }
+
+  return NULL;
 }
 
 /* IP Rewriting: Get target IPv4 for source IPv4

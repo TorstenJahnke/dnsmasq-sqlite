@@ -1944,19 +1944,29 @@ char *db_get_forward_server(const char *domain);  /* DNS forwarding (returns ser
 int db_check_block(const char *domain);
 int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
 
-/* Schema v4.0: IPSet types for lookup results */
+/* Schema v6.2.1: IPSet types for lookup results */
 #define IPSET_TYPE_NONE       0  /* No match → use default DNS */
 #define IPSET_TYPE_TERMINATE  1  /* Direct termination (block_regex, block_exact) */
 #define IPSET_TYPE_DNS_BLOCK  2  /* Forward to DNS blocker (block_wildcard, fqdn_dns_block) */
 #define IPSET_TYPE_DNS_ALLOW  3  /* Forward to real DNS (fqdn_dns_allow) */
-#define IPSET_TYPE_REWRITE    4  /* DNS Doctoring: Rewrite IPs for matched domain (dns_rewrite) */
 
-/* Schema v4.0: New lookup function with 5-step priority */
+/* Schema v6.2.1: Lookup function */
 int db_lookup_domain(const char *domain);  /* Returns IPSET_TYPE_* constant */
 struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6);
 
-/* DNS Doctoring: Get rewritten IPs for a domain */
-int db_get_rewrite_ips(const char *domain, char **ipv4_out, char **ipv6_out);
+/* Domain Aliasing: Redirect queries to different domain
+ * Applied BEFORE DNS resolution (resolves alias instead of source)
+ * Returns alias domain (caller must free) or NULL if no alias
+ * Example: source="old.domain.com" → returns "new.domain.com"
+ */
+char* db_get_domain_alias(const char *source_domain);
+
+/* IP-Rewriting: Rewrite IPs in DNS responses
+ * Applied AFTER DNS resolution, before returning answer to client
+ * Returns rewritten IP or NULL if no rewrite rule exists
+ */
+char* db_get_rewrite_ipv4(const char *source_ipv4);
+char* db_get_rewrite_ipv6(const char *source_ipv6);
 
 /* Legacy functions for backward compatibility */
 struct in_addr *db_get_block_ipv4(void);
