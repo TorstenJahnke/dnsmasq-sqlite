@@ -973,6 +973,20 @@ struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6)  // NOLINT
   }
 }
 
+/******************************************************************************
+ * BEGIN PATCH: Domain Aliasing Feature (Schema 6.2.1)
+ *
+ * Location: db.c, lines ~976-1046
+ * Added: 2025-11-14
+ * Purpose: CNAME-based domain redirects with wildcard subdomain support
+ *
+ * When porting to new dnsmasq version:
+ * 1. Copy this entire function to new db.c
+ * 2. Ensure db_domain_alias prepared statement is initialized in db_init()
+ * 3. Add function declaration to dnsmasq.h
+ * 4. Integrate call in rfc1035.c:answer_request() before DNS resolution
+ *****************************************************************************/
+
 /* Domain Aliasing: Get target domain for source domain
  * Applied BEFORE DNS resolution (resolves alias instead of source)
  *
@@ -1048,6 +1062,22 @@ char* db_get_domain_alias(const char *source_domain)
 
   return NULL;
 }
+/*** END PATCH: Domain Aliasing Feature ***/
+
+
+/******************************************************************************
+ * BEGIN PATCH: IP-Rewriting Feature IPv4 (Schema 6.2.1)
+ *
+ * Location: db.c, lines ~1066-1100
+ * Added: 2025-11-14
+ * Purpose: Rewrite IPv4 addresses in DNS responses (DNS-Doctoring for NAT)
+ *
+ * When porting to new dnsmasq version:
+ * 1. Copy this function to new db.c
+ * 2. Ensure db_ip_rewrite_v4 prepared statement is initialized in db_init()
+ * 3. Add function declaration to dnsmasq.h
+ * 4. Integrate call in rfc1035.c:extract_addresses() after IP extraction
+ *****************************************************************************/
 
 /* IP Rewriting: Get target IPv4 for source IPv4
  * Applied AFTER DNS resolution to rewrite response IPs
@@ -1077,6 +1107,22 @@ char* db_get_rewrite_ipv4(const char *source_ipv4)
 
   return NULL;
 }
+/*** END PATCH: IP-Rewriting Feature IPv4 ***/
+
+
+/******************************************************************************
+ * BEGIN PATCH: IP-Rewriting Feature IPv6 (Schema 6.2.1)
+ *
+ * Location: db.c, lines ~1111-1145
+ * Added: 2025-11-14
+ * Purpose: Rewrite IPv6 addresses in DNS responses (DNS-Doctoring for NAT)
+ *
+ * When porting to new dnsmasq version:
+ * 1. Copy this function to new db.c
+ * 2. Ensure db_ip_rewrite_v6 prepared statement is initialized in db_init()
+ * 3. Add function declaration to dnsmasq.h
+ * 4. Integrate call in rfc1035.c:extract_addresses() after IP extraction
+ *****************************************************************************/
 
 /* IP Rewriting: Get target IPv6 for source IPv6
  * Applied AFTER DNS resolution to rewrite response IPs
@@ -1106,6 +1152,7 @@ char* db_get_rewrite_ipv6(const char *source_ipv6)
 
   return NULL;
 }
+/*** END PATCH: IP-Rewriting Feature IPv6 ***/
 
 /* Legacy functions for backward compatibility with old blocking code
  * In Schema v4.0, these return the first IP from IPSet configurations

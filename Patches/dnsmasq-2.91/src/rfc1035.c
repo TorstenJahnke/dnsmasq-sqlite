@@ -1032,6 +1032,22 @@ int extract_addresses(struct dns_header *header, size_t qlen, char *name, time_t
 		    return 2; /* bad packet */
 		  memcpy(&addr, p1, addrlen);
 
+		  /******************************************************************************
+		   * BEGIN PATCH: IP-Rewriting Integration (Schema 6.2.1)
+		   *
+		   * Location: rfc1035.c:extract_addresses(), lines ~1035-1077
+		   * Added: 2025-11-14
+		   * Purpose: Rewrite IPv4/IPv6 addresses in DNS responses (DNS-Doctoring)
+		   *
+		   * When porting to new dnsmasq version:
+		   * 1. Find extract_addresses() function in rfc1035.c
+		   * 2. Find the section where IPs are extracted: "memcpy(&addr, p1, addrlen)"
+		   * 3. Add this code block AFTER memcpy, BEFORE rebind checks
+		   * 4. Ensure db_get_rewrite_ipv4/v6() exist in db.c and declared in dnsmasq.h
+		   *
+		   * This rewrites IPs in DNS responses for NAT/Split-Horizon DNS scenarios.
+		   *****************************************************************************/
+
 		  /* SQLite IP-Rewriting: Check if IP should be rewritten */
 		  if (flags & F_IPV4)
 		    {
@@ -1075,6 +1091,8 @@ int extract_addresses(struct dns_header *header, size_t qlen, char *name, time_t
 			    }
 			}
 		    }
+
+		  /*** END PATCH: IP-Rewriting Integration ***/
 
 		  /* check for returned address in private space */
 		  if (check_rebind)
@@ -1724,6 +1742,22 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
   
   ans = 0; /* have we answered this question */
 
+  /******************************************************************************
+   * BEGIN PATCH: Domain Aliasing Integration (Schema 6.2.1)
+   *
+   * Location: rfc1035.c:answer_request(), lines ~1727-1752
+   * Added: 2025-11-14
+   * Purpose: Check SQLite domain_alias table and create CNAME responses
+   *
+   * When porting to new dnsmasq version:
+   * 1. Find answer_request() function in rfc1035.c
+   * 2. Add this code block AFTER "ans = 0" initialization
+   * 3. Add it BEFORE the "if (qclass == C_IN) while (--count..." loop
+   * 4. Ensure db_get_domain_alias() exists in db.c and is declared in dnsmasq.h
+   *
+   * This handles CNAME-based domain aliasing with wildcard subdomain support.
+   *****************************************************************************/
+
   /* SQLite Domain Aliasing: Check for domain alias and add CNAME response */
   if (qclass == C_IN && qtype != T_PTR)
     {
@@ -1750,6 +1784,8 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
           free(alias_target);
         }
     }
+
+  /*** END PATCH: Domain Aliasing Integration ***/
 
   if (qclass == C_IN)
     while (--count != 0 && (crecp = cache_find_by_name(NULL, name, now, F_CNAME | F_NXDOMAIN)))

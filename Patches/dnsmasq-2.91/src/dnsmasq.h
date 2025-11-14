@@ -1954,6 +1954,20 @@ int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
 int db_lookup_domain(const char *domain);  /* Returns IPSET_TYPE_* constant */
 struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6);
 
+/******************************************************************************
+ * BEGIN PATCH: Function Declarations for Schema 6.2.1 Features
+ *
+ * Location: dnsmasq.h, lines ~1955-1969
+ * Added: 2025-11-14
+ * Purpose: Declare new DB functions for Domain Aliasing & IP-Rewriting
+ *
+ * When porting to new dnsmasq version:
+ * 1. Copy these function declarations to new dnsmasq.h
+ * 2. Place them near other db_* function declarations
+ * 3. Ensure implementations exist in db.c
+ * 4. Ensure integration calls exist in rfc1035.c
+ *****************************************************************************/
+
 /* Domain Aliasing: Redirect queries to different domain
  * Applied BEFORE DNS resolution (resolves alias instead of source)
  * Returns alias domain (caller must free) or NULL if no alias
@@ -1967,6 +1981,8 @@ char* db_get_domain_alias(const char *source_domain);
  */
 char* db_get_rewrite_ipv4(const char *source_ipv4);
 char* db_get_rewrite_ipv6(const char *source_ipv6);
+
+/*** END PATCH: Function Declarations ***/
 
 /* Legacy functions for backward compatibility */
 struct in_addr *db_get_block_ipv4(void);
