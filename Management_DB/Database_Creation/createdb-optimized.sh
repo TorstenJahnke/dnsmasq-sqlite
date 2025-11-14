@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS db_metadata (
 ) WITHOUT ROWID;
 
 INSERT OR REPLACE INTO db_metadata (key, value) VALUES
-    ('schema_version', '4.1'),
+    ('schema_version', '6.2.1'),
     ('created', datetime('now')),
     ('optimized', 'enterprise-128gb'),
     ('hardware', '8-core-128gb-ram'),
