@@ -2,20 +2,33 @@
 
 ## Überblick
 
-Domain-Aliasing ermöglicht die Umleitung von DNS-Queries von einer Domain zu einer anderen **BEFORE** der DNS-Auflösung. Dies funktioniert ähnlich wie CNAME-Records, aber auf DNS-Server-Ebene.
+Domain-Aliasing ermöglicht CNAME-ähnliche Umleitungen auf DNS-Server-Ebene **mit automatischer Subdomain-Preservation**. Dies ist besonders nützlich für Migrations-Szenarien und lokale Overrides.
+
+## Wildcard-Aliasing mit Subdomain-Preservation
+
+**Das Besondere:** Wenn Sie eine Domain aliased, werden **alle Subdomains automatisch übertragen**!
+
+```
+Alias-Regel in DB:
+  intel.com → keweon.center
+
+DNS-Queries:
+  intel.com        → CNAME: keweon.center
+  www.intel.com    → CNAME: www.keweon.center
+  mail.intel.com   → CNAME: mail.keweon.center
+  api.intel.com    → CNAME: api.keweon.center
+```
 
 ## Funktionsweise
 
 ```
-1. DNS-Query: old.domain.com
-2. Alias-Check in Datenbank
-3. Alias gefunden: old.domain.com → new.domain.com
-4. DNS-Auflösung für: new.domain.com (statt old.domain.com)
-5. Ergebnis (z.B.): 203.0.113.50
-6. Antwort an Client: 203.0.113.50
+1. DNS-Query: www.intel.com
+2. Alias-Check: Exakt "www.intel.com"? → Nein
+3. Alias-Check: Parent "intel.com"? → Ja! → keweon.center
+4. Subdomain-Preservation: www. + keweon.center = www.keweon.center
+5. DNS-Auflösung: www.keweon.center
+6. Antwort: CNAME www.keweon.center + IP
 ```
-
-**Wichtig:** Der Client fragt nach `old.domain.com`, erhält aber die IP von `new.domain.com`!
 
 ## Datenbank-Schema
 
@@ -28,21 +41,31 @@ CREATE TABLE domain_alias (
 
 ## Verwendung
 
-### Beispiel 1: Domain-Umleitung
+### Beispiel 1: Intel → Keweon (mit Subdomain-Preservation!)
 
 ```bash
-# Alte Domain → Neue Domain
-./manage-domain-alias.sh blocklist.db add old.example.com new.example.com
+# Domain-Alias: intel.com → keweon.center
+./manage-domain-alias.sh blocklist.db add intel.com keweon.center
 
-# Test
-./manage-domain-alias.sh blocklist.db test old.example.com
-# ✓ Alias found: old.example.com → new.example.com
+# Test verschiedene Subdomains
+./manage-domain-alias.sh blocklist.db test intel.com
+# ✓ Alias found: intel.com → keweon.center
 ```
 
+**Automatisches Wildcard-Verhalten:**
+
+| Query | CNAME-Antwort | Erklärung |
+|-------|---------------|-----------|
+| `intel.com` | `keweon.center` | Exakt Match |
+| `www.intel.com` | `www.keweon.center` | Subdomain erhalten! |
+| `mail.intel.com` | `mail.keweon.center` | Subdomain erhalten! |
+| `api.intel.com` | `api.keweon.center` | Subdomain erhalten! |
+| `download.intel.com` | `download.keweon.center` | Subdomain erhalten! |
+
 **Ergebnis:**
-- DNS-Query für `old.example.com`
-- System löst `new.example.com` auf
-- Client erhält IP von `new.example.com`
+- **Eine** Regel in der DB aliased die **gesamte Domain** inkl. Subdomains!
+- Subdomains werden automatisch übertragen
+- Client erhält CNAME-Record als Antwort
 
 ### Beispiel 2: Lokale Overrides
 

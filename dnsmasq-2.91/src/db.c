@@ -975,7 +975,17 @@ struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6)  // NOLINT
 
 /* Domain Aliasing: Get target domain for source domain
  * Applied BEFORE DNS resolution (resolves alias instead of source)
- * Example: source_domain="old.domain.com" → returns "new.domain.com"
+ *
+ * Supports wildcard aliasing with subdomain preservation:
+ *   Alias: intel.com → keweon.center
+ *   Query: www.intel.com → CNAME: www.keweon.center
+ *   Query: mail.intel.com → CNAME: mail.keweon.center
+ *
+ * Algorithm:
+ *   1. Check exact match (www.intel.com)
+ *   2. If not found, check parent domains (intel.com)
+ *   3. If parent found, preserve subdomain prefix
+ *
  * Returns: Allocated string with target domain (caller must free) or NULL if no alias
  */
 char* db_get_domain_alias(const char *source_domain)
@@ -985,17 +995,54 @@ char* db_get_domain_alias(const char *source_domain)
   if (!db || !db_domain_alias || !source_domain)
     return NULL;
 
+  /* Step 1: Try exact match first */
   sqlite3_reset(db_domain_alias);
-  if (sqlite3_bind_text(db_domain_alias, 1, source_domain, -1, SQLITE_TRANSIENT) != SQLITE_OK)
-    return NULL;
-
-  if (sqlite3_step(db_domain_alias) == SQLITE_ROW)
+  if (sqlite3_bind_text(db_domain_alias, 1, source_domain, -1, SQLITE_TRANSIENT) == SQLITE_OK)
   {
-    const unsigned char *target_domain = sqlite3_column_text(db_domain_alias, 0);
-    if (target_domain)
+    if (sqlite3_step(db_domain_alias) == SQLITE_ROW)
     {
-      printf("Domain Alias: %s → %s\n", source_domain, (const char *)target_domain);
-      return strdup((const char *)target_domain);
+      const unsigned char *target_domain = sqlite3_column_text(db_domain_alias, 0);
+      if (target_domain)
+      {
+        printf("Domain Alias (exact): %s → %s\n", source_domain, (const char *)target_domain);
+        return strdup((const char *)target_domain);
+      }
+    }
+  }
+
+  /* Step 2: Try parent domain with subdomain preservation */
+  const char *dot = strchr(source_domain, '.');
+  if (dot && *(dot + 1) != '\0')  /* Has subdomain (e.g., www.intel.com) */
+  {
+    const char *parent_domain = dot + 1;  /* intel.com */
+
+    sqlite3_reset(db_domain_alias);
+    if (sqlite3_bind_text(db_domain_alias, 1, parent_domain, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+    {
+      if (sqlite3_step(db_domain_alias) == SQLITE_ROW)
+      {
+        const unsigned char *target_domain = sqlite3_column_text(db_domain_alias, 0);
+        if (target_domain)
+        {
+          /* Preserve subdomain prefix (e.g., www.) */
+          size_t prefix_len = dot - source_domain + 1;  /* Length including the dot */
+          size_t target_len = strlen((const char *)target_domain);
+          size_t total_len = prefix_len + target_len + 1;
+
+          char *result = malloc(total_len);
+          if (result)
+          {
+            // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+            strncpy(result, source_domain, prefix_len);
+            strcpy(result + prefix_len, (const char *)target_domain);
+
+            printf("Domain Alias (wildcard): %s → %s (parent: %s → %s)\n",
+                   source_domain, result, parent_domain, (const char *)target_domain);
+
+            return result;
+          }
+        }
+      }
     }
   }
 
