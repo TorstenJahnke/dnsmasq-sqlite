@@ -1,0 +1,277 @@
+===============================================================================
+GEÄNDERTE DATEIEN - SCHNELLÜBERSICHT
+===============================================================================
+
+Patches/dnsmasq-2.91/src/
+├── db.c         (42 KB) - SQLite DB-Funktionen
+├── dnsmasq.h    (62 KB) - Function Declarations
+└── rfc1035.c    (69 KB) - DNS Query/Response Integration
+
+===============================================================================
+db.c - SQLite Datenbank-Funktionen
+===============================================================================
+
+NEUE FUNKTIONEN:
+
+1. char* db_get_domain_alias(const char *source_domain)
+   Zeilen: ~991-1046
+
+   Funktion:
+   - Prüft domain_alias Tabelle
+   - Step 1: Exact Match Lookup
+   - Step 2: Parent Domain Lookup mit Subdomain-Preservation
+
+   Rückgabe:
+   - Target Domain (malloc'd string, Caller muss free() aufrufen)
+   - NULL wenn keine Alias gefunden
+
+   Beispiel:
+   - Input: "www.intel.com"
+   - DB: "intel.com" → "keweon.center"
+   - Output: "www.keweon.center"
+
+2. char* db_get_rewrite_ipv4(const char *source_ipv4)
+   Zeilen: ~1057-1085
+
+   Funktion:
+   - Prüft ip_rewrite_v4 Tabelle
+   - Simple Exact Match Lookup
+
+   Rückgabe:
+   - Target IPv4 (malloc'd string)
+   - NULL wenn keine Regel gefunden
+
+   Beispiel:
+   - Input: "178.223.16.21"
+   - Output: "10.20.0.10"
+
+3. char* db_get_rewrite_ipv6(const char *source_ipv6)
+   Zeilen: ~1086-1114
+
+   Funktion:
+   - Prüft ip_rewrite_v6 Tabelle
+   - Simple Exact Match Lookup
+
+   Rückgabe:
+   - Target IPv6 (malloc'd string)
+   - NULL wenn keine Regel gefunden
+
+   Beispiel:
+   - Input: "2001:4860:4860::8888"
+   - Output: "fd00::1"
+
+PREPARED STATEMENTS:
+
+static sqlite3_stmt *db_domain_alias = NULL;
+static sqlite3_stmt *db_ip_rewrite_v4 = NULL;
+static sqlite3_stmt *db_ip_rewrite_v6 = NULL;
+
+- Werden in db_init() initialisiert
+- Einmalig kompiliert, wiederverwendet
+- Performance-Optimierung
+
+===============================================================================
+dnsmasq.h - Header-Datei
+===============================================================================
+
+NEUE DEKLARATIONEN:
+
+Zeilen: ~1962-1969
+
+/* Domain Aliasing: Redirect queries to different domain */
+char* db_get_domain_alias(const char *source_domain);
+
+/* IP-Rewriting: Rewrite IPs in DNS responses */
+char* db_get_rewrite_ipv4(const char *source_ipv4);
+char* db_get_rewrite_ipv6(const char *source_ipv6);
+
+SCHEMA-VERSION:
+
+/* Schema v6.2.1: Domain Aliasing & IP-Rewriting */
+- Kommentare aktualisiert auf Version 6.2.1
+
+===============================================================================
+rfc1035.c - DNS Query/Response Verarbeitung
+===============================================================================
+
+ÄNDERUNG 1: Domain Aliasing Integration
+Zeilen: 1683-1708
+Funktion: answer_request()
+
+Code-Block:
+  /* SQLite Domain Aliasing: Check for domain alias and add CNAME response */
+  if (qclass == C_IN && qtype != T_PTR)
+  {
+    char *alias_target = db_get_domain_alias(name);
+    if (alias_target)
+    {
+      /* Add CNAME record to response */
+      log_query(F_CONFIG | F_CNAME, name, NULL, "<alias>", 0);
+      if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                              daemon->local_ttl, &nameoffset,
+                              T_CNAME, C_IN, "d", alias_target))
+        anscount++;
+
+      ans = 1;
+      sec_data = 0;
+
+      /* If query was NOT for CNAME specifically, continue resolving */
+      if (qtype != T_CNAME && strlen(alias_target) < MAXDNAME)
+      {
+        strcpy(name, alias_target);
+        /* Continue resolution with the aliased domain */
+      }
+
+      free(alias_target);
+    }
+  }
+
+Timing:
+- Wird VOR der Cache-Lookup ausgeführt
+- Wird bei JEDER DNS-Query ausgeführt (außer PTR)
+
+Verhalten:
+- Prüft domain_alias Tabelle
+- Wenn Alias gefunden: CNAME-Record wird zur Response hinzugefügt
+- Für A/AAAA Queries: Name wird überschrieben, Auflösung fortsetzt
+- Für CNAME Queries: Nur CNAME wird zurückgegeben
+
+ÄNDERUNG 2: IP-Rewriting Integration (IPv4)
+Zeilen: 1036-1056
+Funktion: extract_addresses()
+
+Code-Block:
+  /* SQLite IP-Rewriting: Check if IP should be rewritten */
+  if (flags & F_IPV4)
+  {
+    char ip_str[INET_ADDRSTRLEN];
+    if (inet_ntop(AF_INET, &addr.addr4, ip_str, sizeof(ip_str)))
+    {
+      char *rewrite_ip = db_get_rewrite_ipv4(ip_str);
+      if (rewrite_ip)
+      {
+        struct in_addr new_addr;
+        if (inet_pton(AF_INET, rewrite_ip, &new_addr) == 1)
+        {
+          log_query(F_CONFIG | F_IPV4, name, &addr, "<IP-Rewrite>", 0);
+          addr.addr4 = new_addr;
+          /* Also update the packet to prevent cache inconsistency */
+          memcpy((void *)p1, &new_addr, INADDRSZ);
+          log_query(F_CONFIG | F_IPV4, name, &addr, rewrite_ip, 0);
+        }
+        free(rewrite_ip);
+      }
+    }
+  }
+
+Timing:
+- Wird NACH Empfang der DNS-Response ausgeführt
+- Wird bei A-Record-Responses ausgeführt
+
+Verhalten:
+- IP wird aus Response extrahiert
+- ip_rewrite_v4 Tabelle wird geprüft
+- Wenn Regel gefunden:
+  1. IP wird in addr-Struct überschrieben
+  2. IP wird im DNS-Paket überschrieben (Cache-Konsistenz!)
+  3. Rewrite wird geloggt
+
+ÄNDERUNG 3: IP-Rewriting Integration (IPv6)
+Zeilen: 1057-1077
+Funktion: extract_addresses()
+
+Code-Block:
+  else if (flags & F_IPV6)
+  {
+    char ip_str[INET6_ADDRSTRLEN];
+    if (inet_ntop(AF_INET6, &addr.addr6, ip_str, sizeof(ip_str)))
+    {
+      char *rewrite_ip = db_get_rewrite_ipv6(ip_str);
+      if (rewrite_ip)
+      {
+        struct in6_addr new_addr;
+        if (inet_pton(AF_INET6, rewrite_ip, &new_addr) == 1)
+        {
+          log_query(F_CONFIG | F_IPV6, name, &addr, "<IP-Rewrite>", 0);
+          addr.addr6 = new_addr;
+          /* Also update the packet to prevent cache inconsistency */
+          memcpy((void *)p1, &new_addr, IN6ADDRSZ);
+          log_query(F_CONFIG | F_IPV6, name, &addr, rewrite_ip, 0);
+        }
+        free(rewrite_ip);
+      }
+    }
+  }
+
+Timing:
+- Wird NACH Empfang der DNS-Response ausgeführt
+- Wird bei AAAA-Record-Responses ausgeführt
+
+Verhalten:
+- Identisch zu IPv4, aber mit IPv6-Adressen
+
+===============================================================================
+MEMORY MANAGEMENT
+===============================================================================
+
+WICHTIG: Alle drei neuen Funktionen allokieren Memory mit malloc()!
+
+db_get_domain_alias():  return strdup(...) oder malloc(...)
+db_get_rewrite_ipv4():  return strdup(...)
+db_get_rewrite_ipv6():  return strdup(...)
+
+Caller MUSS free() aufrufen!
+
+In rfc1035.c wird dies korrekt gehandhabt:
+  char *alias_target = db_get_domain_alias(name);
+  if (alias_target) {
+    // ... use alias_target ...
+    free(alias_target);  // ✅ Memory wird freigegeben
+  }
+
+===============================================================================
+ERROR HANDLING
+===============================================================================
+
+Alle Funktionen returnen NULL bei:
+- Kein Match gefunden
+- DB nicht initialisiert
+- SQLite-Fehler
+
+NULL-Returns werden in rfc1035.c sicher gehandhabt:
+  if (alias_target) {
+    // Nur ausführen wenn nicht NULL
+  }
+
+===============================================================================
+LOGGING
+===============================================================================
+
+Domain Aliasing:
+  log_query(F_CONFIG | F_CNAME, name, NULL, "<alias>", 0);
+
+IP-Rewriting:
+  log_query(F_CONFIG | F_IPV4, name, &addr, "<IP-Rewrite>", 0);
+  log_query(F_CONFIG | F_IPV4, name, &addr, rewrite_ip, 0);
+
+Logs erscheinen in:
+- dnsmasq log-facility (syslog oder stderr mit -d flag)
+- Format: "config <alias> is CNAME intel.com keweon.center"
+- Format: "config <IP-Rewrite> is 178.223.16.21"
+
+===============================================================================
+DEPENDENCIES
+===============================================================================
+
+db.c:
+  - sqlite3.h
+  - Bestehende dnsmasq DB-Infrastruktur
+
+dnsmasq.h:
+  - Keine neuen Dependencies
+
+rfc1035.c:
+  - arpa/inet.h (inet_ntop, inet_pton)
+  - Bestehende dnsmasq DNS-Infrastruktur
+
+===============================================================================

@@ -48,9 +48,12 @@ sqlite3 "$DB_FILE" <<'EOF'
 -- LOOKUP ORDER (sequential):
 -- 1. block_regex      → IPSetTerminate (IPv4 + IPv6 direct response)
 -- 2. block_exact      → IPSetTerminate (IPv4 + IPv6 direct response)
+-- 2a. domain_alias    → Resolve target domain instead of source domain
 -- 3. block_wildcard   → IPSetDNSBlock (DNS Forward to blocker)
 -- 4. fqdn_dns_allow   → IPSetDNSAllow (DNS Forward to real DNS)
 -- 5. fqdn_dns_block   → IPSetDNSBlock (DNS Forward to blocker)
+-- 6. Normal DNS resolution (with domain alias if applicable)
+-- 7. ip_rewrite_v4/v6 → Rewrite IPs in DNS response (AFTER resolution!)
 -- ============================================================================
 
 -- ============================================================================
@@ -94,6 +97,54 @@ CREATE TABLE IF NOT EXISTS block_exact (
 -- Covering Index (optimized for exact match lookups)
 CREATE INDEX IF NOT EXISTS idx_block_exact_covering
 ON block_exact(Domain);
+
+-- ----------------------------------------------------------------------------
+-- Table 2a: ip_rewrite_v4 - IPv4 Address Rewriting (DNS Doctoring)
+-- Rewrites source IPs in DNS responses to target IPs
+-- Example: DNS returns 178.223.16.21 → Rewrite to 10.20.0.10
+-- Use Case: NAT, private network mapping, IP address translation
+-- Applied AFTER DNS resolution, before returning answer to client
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ip_rewrite_v4 (
+    Source_IPv4 TEXT PRIMARY KEY,
+    Target_IPv4 TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- Index for fast lookups during DNS response processing
+CREATE INDEX IF NOT EXISTS idx_ip_rewrite_v4_source
+ON ip_rewrite_v4(Source_IPv4);
+
+-- ----------------------------------------------------------------------------
+-- Table 2b: ip_rewrite_v6 - IPv6 Address Rewriting (DNS Doctoring)
+-- Rewrites source IPs in DNS responses to target IPs
+-- Example: DNS returns 2001:db8::1 → Rewrite to fd00::10
+-- Use Case: IPv6 NAT, ULA mapping, IPv6 address translation
+-- Applied AFTER DNS resolution, before returning answer to client
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ip_rewrite_v6 (
+    Source_IPv6 TEXT PRIMARY KEY,
+    Target_IPv6 TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- Index for fast lookups during DNS response processing
+CREATE INDEX IF NOT EXISTS idx_ip_rewrite_v6_source
+ON ip_rewrite_v6(Source_IPv6);
+
+-- ----------------------------------------------------------------------------
+-- Table 2c: domain_alias - Domain Aliasing
+-- Redirects DNS queries from one domain to another
+-- Example: some.domain.com → alias.other.com
+-- Use Case: CNAME-like functionality, domain redirection, local overrides
+-- Applied BEFORE DNS resolution (resolves the alias domain instead)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS domain_alias (
+    Source_Domain TEXT PRIMARY KEY,
+    Target_Domain TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- Index for fast lookups during DNS query processing
+CREATE INDEX IF NOT EXISTS idx_domain_alias_source
+ON domain_alias(Source_Domain);
 
 -- ----------------------------------------------------------------------------
 -- Table 3: block_wildcard - Wildcard Domain Match (includes subdomains!)
@@ -203,16 +254,18 @@ CREATE TABLE IF NOT EXISTS db_metadata (
 ) WITHOUT ROWID;
 
 INSERT OR REPLACE INTO db_metadata (key, value) VALUES
-    ('schema_version', '4.0'),
+    ('schema_version', '6.2.1'),
     ('created', datetime('now')),
     ('optimized', 'enterprise-128gb'),
     ('hardware', '8-core-128gb-ram'),
     ('cache_size_gb', '80'),
     ('mmap_size_gb', '2'),
     ('max_domains', '1000000000'),
-    ('features', 'without_rowid,covering_indexes,mmap,wal,dns_forwarding,threads-8,ipsets'),
+    ('features', 'without_rowid,covering_indexes,mmap,wal,dns_forwarding,ip_rewrite,domain_alias,threads-8,ipsets'),
     ('ipsets', 'IPSetTerminate,IPSetDNSBlock,IPSetDNSAllow'),
-    ('lookup_order', '1:block_regex,2:block_exact,3:block_wildcard,4:fqdn_dns_allow,5:fqdn_dns_block'),
+    ('lookup_order', '1:block_regex,2:block_exact,2a:domain_alias,3:block_wildcard,4:fqdn_dns_allow,5:fqdn_dns_block,6:normal_dns,7:ip_rewrite'),
+    ('ip_rewrite', 'ip_rewrite_v4,ip_rewrite_v6'),
+    ('domain_alias', 'domain_alias'),
     ('ipv6_first', 'true');
 
 EOF
