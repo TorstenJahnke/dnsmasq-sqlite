@@ -1679,7 +1679,34 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
   GETSHORT(qclass, p);
   
   ans = 0; /* have we answered this question */
-  
+
+  /* SQLite Domain Aliasing: Check for domain alias and add CNAME response */
+  if (qclass == C_IN && qtype != T_PTR)
+    {
+      char *alias_target = db_get_domain_alias(name);
+      if (alias_target)
+        {
+          /* Add CNAME record to response */
+          log_query(F_CONFIG | F_CNAME, name, NULL, "<alias>", 0);
+          if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                  daemon->local_ttl, &nameoffset,
+                                  T_CNAME, C_IN, "d", alias_target))
+            anscount++;
+
+          ans = 1;
+          sec_data = 0;
+
+          /* If query was NOT for CNAME specifically, continue resolving the alias target */
+          if (qtype != T_CNAME && strlen(alias_target) < MAXDNAME)
+            {
+              strcpy(name, alias_target);
+              /* Continue resolution with the aliased domain */
+            }
+
+          free(alias_target);
+        }
+    }
+
   if (qclass == C_IN)
     while (--count != 0 && (crecp = cache_find_by_name(NULL, name, now, F_CNAME | F_NXDOMAIN)))
       {
