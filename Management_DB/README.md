@@ -73,8 +73,7 @@ Erstellt optimierte Datenbanken mit Phase 1 PRAGMAs.
 
 | Script | Beschreibung |
 |--------|--------------|
-| `createdb-phase2.sh` | ⭐ **Empfohlen!** Phase 1+2 optimized (legacy or normalized) |
-| `createdb.sh` | Basic schema (für einfache Tests) |
+| `createdb.sh` | ⭐ **Empfohlen!** Phase 1+2 optimized with normalized schema (73% savings) |
 | `createdb-regex.sh` | Schema mit Regex-Support (für Tests) |
 | `migrate-to-sqlite-freebsd.sh` | Migration von alten Daten |
 | `optimize-db-after-import.sh` | Post-import Optimierung |
@@ -84,11 +83,13 @@ Erstellt optimierte Datenbanken mit Phase 1 PRAGMAs.
 ```bash
 cd Database_Creation/
 
-# Legacy schema (kompatibel mit bestehendem Code)
-./createdb-phase2.sh mydatabase.db legacy
+# Create normalized database (Phase 1+2 optimized)
+./createdb.sh mydatabase.db
 
-# Normalized schema (73% storage savings!)
-./createdb-phase2.sh mydatabase.db normalized
+# Features:
+# - Normalized schema: 73% storage savings (44GB vs 162GB)
+# - INSTEAD OF triggers: Compatible with all Import/Export/Delete scripts
+# - Phase 1+2 PRAGMAs: Optimized for 128GB RAM
 ```
 
 **Phase 1 SQLite PRAGMAs (included):**
@@ -464,9 +465,9 @@ cd Build/
 sudo ./build-freebsd.sh clean
 cd ..
 
-# 2. Datenbank erstellen (Phase 1+2 optimized)
+# 2. Datenbank erstellen (Phase 1+2 optimized mit normalized schema)
 cd Database_Creation/
-./createdb-phase2.sh ../../blocklist.db legacy  # oder 'normalized'
+./createdb.sh ../../blocklist.db
 cd ..
 
 # 3. Beispiel-Daten importieren
@@ -521,7 +522,7 @@ Alle Scripts zeigen Hilfe ohne Parameter:
 - ✅ `cleanup-duplicates.sh` - Intelligente Duplikat-Bereinigung
 - ✅ `workflow-cleanup-database.sh` - Kompletter Workflow
 - ✅ `build-freebsd.sh` - Phase 1+2 Build
-- ✅ `createdb-phase2.sh` - Phase 1+2 optimized DB
+- ✅ `createdb.sh` - Phase 1+2 optimized DB (normalized schema, 73% savings)
 
 **Siehe auch:**
 - `README-PHASE2.md` - Phase 1+2 Update Details

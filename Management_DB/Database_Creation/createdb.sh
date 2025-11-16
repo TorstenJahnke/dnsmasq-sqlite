@@ -6,7 +6,7 @@
 # Phase 1: Thread-safety + SQLite config fixes
 # Phase 2: Connection pool (32 connections) + Normalized schema (73% storage savings)
 #
-# Usage: ./createdb-phase2.sh [database.db]
+# Usage: ./createdb.sh [database.db]
 
 set -e
 

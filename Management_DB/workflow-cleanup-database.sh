@@ -59,7 +59,7 @@ if [ ! -f "$DB_FILE" ]; then
     echo ""
     echo "Create database first:"
     echo "  cd Database_Creation"
-    echo "  ./createdb-phase2.sh $DB_FILE legacy"
+    echo "  ./createdb.sh $DB_FILE"
     exit 1
 fi
 
