@@ -15,9 +15,9 @@ All scripts have been updated to support **Phase 1+2 optimizations**:
 
 **Obsolete scripts removed:**
 - ❌ `build-with-valkey.sh` (experimental, not maintained)
-- ❌ `createdb-enterprise-128gb.sh` (replaced by createdb-phase2.sh)
-- ❌ `createdb-optimized.sh` (replaced by createdb-phase2.sh)
-- ❌ `createdb-dual.sh` (replaced by createdb-phase2.sh)
+- ❌ `createdb-enterprise-128gb.sh` (replaced by createdb.sh)
+- ❌ `createdb-optimized.sh` (replaced by createdb.sh)
+- ❌ `createdb-dual.sh` (replaced by createdb.sh)
 - ❌ `_Deprecated_Old_Scripts/` folder (deleted)
 
 ---
@@ -42,11 +42,8 @@ sudo ./build-freebsd.sh clean
 ```bash
 cd Database_Creation
 
-# Legacy schema (compatible with existing code)
-./createdb-phase2.sh mydatabase.db legacy
-
-# Normalized schema (73% storage savings!)
-./createdb-phase2.sh mydatabase.db normalized
+# Create normalized database (Phase 1+2 optimized, 73% storage savings)
+./createdb.sh mydatabase.db
 ```
 
 **What it does:**
@@ -69,8 +66,7 @@ Management_DB/
 │   └── build-freebsd.sh      # Builds with -pthread and Phase 2 optimizations
 │
 ├── Database_Creation/        # ✅ Updated for Phase 1+2
-│   ├── createdb-phase2.sh    # ⭐ NEW: Phase 1+2 optimized (legacy or normalized)
-│   ├── createdb.sh           # Basic schema (kept for simple testing)
+│   ├── createdb.sh           # ⭐ NEW: Phase 1+2 optimized (normalized, 73% savings)
 │   ├── createdb-regex.sh     # Regex-enabled schema (kept for testing)
 │   ├── migrate-to-sqlite-freebsd.sh  # Migration tool
 │   └── optimize-db-after-import.sh   # Post-import optimization
@@ -116,21 +112,15 @@ Management_DB/
 
 ### Database Creation Scripts
 
-**`Database_Creation/createdb-phase2.sh`** - ⭐ NEW! Recommended
-- Phase 1 SQLite PRAGMAs (mmap_size=0, cache_size=40GB, busy_timeout=5s)
-- Supports both schemas:
-  - `legacy` - Compatible with existing code (162GB storage)
-  - `normalized` - 73% storage savings (44GB storage)
-- Creates correct table names (block_exact, block_wildcard, etc.)
-- Includes compatibility views for normalized schema
-
-**`Database_Creation/createdb.sh`** - ✅ Kept (simple testing)
-- Basic schema for quick testing
-- No advanced features
+**`Database_Creation/createdb.sh`** - ⭐ NEW! Recommended
+- Phase 1+2 SQLite PRAGMAs (mmap_size=0, cache_size=40GB, busy_timeout=5s)
+- Normalized schema only (73% storage savings: 44GB vs 162GB)
+- INSTEAD OF triggers for compatibility with existing scripts
+- All Import/Export/Delete scripts work without modification
+- Creates: `domains` + `records` tables + views (block_exact, block_wildcard, etc.)
 
 **`Database_Creation/createdb-regex.sh`** - ✅ Kept (regex testing)
-- Schema with regex support
-- Useful for pattern testing
+- Schema with regex support (useful for pattern testing)
 
 ---
 
@@ -145,7 +135,7 @@ Management_DB/
 
 **New Way (Phase 1+2):**
 ```bash
-./createdb-phase2.sh database.db legacy      # ✅ Correct PRAGMAs
+./createdb.sh database.db      # ✅ Correct PRAGMAs + Normalized schema
 ```
 
 **Why?**
@@ -229,15 +219,15 @@ sudo ./build-freebsd.sh clean
 ```bash
 cd Database_Creation
 
-# Test legacy schema
-./createdb-phase2.sh test-legacy.db legacy
-
-# Test normalized schema
-./createdb-phase2.sh test-normalized.db normalized
+# Test normalized schema (Phase 1+2 optimized)
+./createdb.sh test-normalized.db
 
 # Verify tables exist
-sqlite3 test-legacy.db ".tables"
 sqlite3 test-normalized.db ".tables"
+
+# Expected output:
+# block_exact, block_regex, block_wildcard, db_metadata,
+# domains, fqdn_dns_allow, fqdn_dns_block, records
 ```
 
 ### Test Import
@@ -279,7 +269,7 @@ sqlite3 ../Database_Creation/test-legacy.db "SELECT COUNT(*) FROM block_exact;"
 
 **Updated:**
 - ✅ `Build/build-freebsd.sh` - Builds with -pthread and Phase 2 features
-- ✅ `Database_Creation/createdb-phase2.sh` - NEW! Phase 1+2 optimized schema
+- ✅ `Database_Creation/createdb.sh` - Phase 1+2 optimized (normalized schema, 73% savings)
 
 **Removed:**
 - ❌ Obsolete/deprecated scripts deleted
