@@ -77,9 +77,10 @@ static char *ipset_dns_allow = NULL;     /* Real DNS servers (with port): "8.8.8
 static pthread_rwlock_t ipset_config_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 /* CRITICAL FIX: Thread-local storage to prevent memory leaks from strdup()
- * These replace all strdup() calls that were causing 1.7GB/day leaks */
-static __thread char tls_server_buffer[256];
-static __thread char tls_domain_buffer[256];
+ * These replace all strdup() calls that were causing 1.7GB/day leaks
+ * SIZES INCREASED: 4096 for IPs (100+ IPs), 1024 for domains */
+static __thread char tls_server_buffer[4096];
+static __thread char tls_domain_buffer[1024];
 static __thread char tls_ipv4_buffer[INET_ADDRSTRLEN];
 static __thread char tls_ipv6_buffer[INET6_ADDRSTRLEN];
 
@@ -298,72 +299,60 @@ static void db_init_internal(void)
    * Target: 15,000-30,000 QPS with 150GB DB on 128GB RAM FreeBSD
    * ======================================================================== */
 
+  /* CRITICAL: Check return values for all PRAGMAs
+   * Failure of cache_size causes 100-1000x performance drop! */
+#define CHECK_PRAGMA(stmt) do { \
+    int rc = sqlite3_exec(db, stmt, NULL, NULL, NULL); \
+    if (rc != SQLITE_OK) \
+      fprintf(stderr, "WARNING: PRAGMA failed: %s\n", stmt); \
+  } while(0)
+
   /* Memory-mapped I/O: DISABLED for large databases
    * CRITICAL FIX: mmap causes page fault storms with >100GB random access
    * ZFS ARC is more efficient than mmap for large DB files
    * Grok's recommendation: mmap_size = 0 for production */
-  sqlite3_exec(db, "PRAGMA mmap_size = 0", NULL, NULL, NULL);
+  CHECK_PRAGMA("PRAGMA mmap_size = 0");
 
   /* Cache Size: 40 GB (shared cache for all connections)
-   * Calculation: -41943040 = 40 GB in kilobytes (negative = KB)
-   * Strategy: 40GB SQLite + 80GB ZFS ARC = 120GB total cache
-   * Leaves headroom for OS and other processes */
-  sqlite3_exec(db, "PRAGMA cache_size = -41943040", NULL, NULL, NULL);
+   * CRITICAL: If this fails, performance drops 100-1000x! */
+  CHECK_PRAGMA("PRAGMA cache_size = -41943040");
 
   /* Temp Store: MEMORY
    * Benefit: Temp tables in RAM instead of disk (for sorting/aggregation) */
-  sqlite3_exec(db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
+  CHECK_PRAGMA("PRAGMA temp_store = MEMORY");
 
   /* Journal Mode: WAL (Write-Ahead Logging)
-   * CRITICAL: Enables parallel reads during writes
-   * Without WAL, all operations are serialized! */
-  sqlite3_exec(db, "PRAGMA journal_mode = WAL", NULL, NULL, NULL);
-
-  /* Locking Mode: NORMAL (DEFAULT - do NOT use EXCLUSIVE!)
-   * CRITICAL FIX: EXCLUSIVE blocks ALL parallel reads!
-   * Dnsmasq is multi-threaded, needs concurrent read access
-   * With WAL + NORMAL: Many threads can read simultaneously
-   * PERFORMANCE IMPACT: Removing EXCLUSIVE = 15x speedup! */
-  /* REMOVED: sqlite3_exec(db, "PRAGMA locking_mode = EXCLUSIVE", ...); */
+   * CRITICAL: Enables parallel reads during writes */
+  CHECK_PRAGMA("PRAGMA journal_mode = WAL");
 
   /* Synchronous: NORMAL (safe with WAL + ZFS)
-   * Benefit: 50x faster than FULL, crash-safe with WAL mode
-   * ZFS with separate ZIL makes this safe */
-  sqlite3_exec(db, "PRAGMA synchronous = NORMAL", NULL, NULL, NULL);
+   * Benefit: 50x faster than FULL, crash-safe with WAL mode */
+  CHECK_PRAGMA("PRAGMA synchronous = NORMAL");
 
   /* WAL Auto Checkpoint: 1000 pages (more aggressive)
-   * CORRECTED: Smaller WAL = better cache locality for read-heavy workload
    * DNS is 99.9% reads, <0.1% writes - aggressive checkpoint is optimal */
-  sqlite3_exec(db, "PRAGMA wal_autocheckpoint = 1000", NULL, NULL, NULL);
+  CHECK_PRAGMA("PRAGMA wal_autocheckpoint = 1000");
 
   /* Busy Timeout: 5 seconds
-   * NEW: Prevents immediate SQLITE_BUSY in multi-threading
-   * Threads wait for locks instead of failing immediately */
-  sqlite3_exec(db, "PRAGMA busy_timeout = 5000", NULL, NULL, NULL);
+   * Prevents immediate SQLITE_BUSY in multi-threading */
+  CHECK_PRAGMA("PRAGMA busy_timeout = 5000");
 
-  /* Threads: 8 (utilize all CPU cores)
-   * Benefit: Parallel query execution on multi-core systems
-   * Note: Requires SQLite 3.37+ compiled with SQLITE_MAX_WORKER_THREADS */
-  sqlite3_exec(db, "PRAGMA threads = 8", NULL, NULL, NULL);
+  /* Threads: 8 (utilize all CPU cores) */
+  CHECK_PRAGMA("PRAGMA threads = 8");
 
-  /* Automatic Index: OFF (we have all indexes manually)
-   * Benefit: Prevents SQLite from creating temp indexes = faster queries
-   * Safe because: All tables have covering indexes */
-  sqlite3_exec(db, "PRAGMA automatic_index = OFF", NULL, NULL, NULL);
+  /* Automatic Index: OFF (we have all indexes manually) */
+  CHECK_PRAGMA("PRAGMA automatic_index = OFF");
 
-  /* Secure Delete: OFF (performance over secure wipe)
-   * Benefit: Faster DELETE operations (don't overwrite with zeros)
-   * Safe because: Not handling sensitive data requiring secure wipe */
-  sqlite3_exec(db, "PRAGMA secure_delete = OFF", NULL, NULL, NULL);
+  /* Secure Delete: OFF (performance over secure wipe) */
+  CHECK_PRAGMA("PRAGMA secure_delete = OFF");
 
-  /* Cell Size Check: OFF (production mode)
-   * Benefit: Reduced overhead on every cell access
-   * Safe because: DB created with proper schema, no corruption expected */
-  sqlite3_exec(db, "PRAGMA cell_size_check = OFF", NULL, NULL, NULL);
+  /* Cell Size Check: OFF (production mode) */
+  CHECK_PRAGMA("PRAGMA cell_size_check = OFF");
 
-  /* Query Optimizer Hints (SQLite 3.46+)
-   * Benefit: Better query plans for our specific access patterns */
-  sqlite3_exec(db, "PRAGMA optimize", NULL, NULL, NULL);
+  /* Query Optimizer Hints (SQLite 3.46+) */
+  CHECK_PRAGMA("PRAGMA optimize");
+
+#undef CHECK_PRAGMA
 
   printf("SQLite ENTERPRISE optimizations enabled (128 GB RAM: mmap=2GB, cache=100GB, threads=8, EXCLUSIVE locking)\n");
 
@@ -380,71 +369,36 @@ static void db_init_internal(void)
    * ======================================================================== */
 
 #ifdef HAVE_REGEX
-  /* Step 1: block_regex (Pattern) → IPSetTerminate
-   * PCRE2 pattern matching for complex blocking rules
-   * Example: ^ad[sz]?[0-9]*\..*$ matches ads.example.com
-   * Returns: Pattern (IPs come from IPSetTerminate config)
-   */
-  sqlite3_prepare(
-    db,
-    "SELECT Pattern FROM block_regex",
-    -1,
-    &db_block_regex,
-    NULL
-  );
+  /* Step 1: block_regex (Pattern) → IPSetTerminate */
+  if (sqlite3_prepare(db, "SELECT Pattern FROM block_regex", -1, &db_block_regex, NULL) != SQLITE_OK) {
+    fprintf(stderr, "CRITICAL: Failed to prepare block_regex: %s\n", sqlite3_errmsg(db));
+    exit(1);
+  }
 #endif
 
-  /* Step 2: block_exact (Domain) → IPSetTerminate
-   * Exact domain match ONLY (no subdomains!)
-   * Example: ads.example.com blocks ads.example.com (NOT www.ads.example.com)
-   * Returns: Domain found (IPs come from IPSetTerminate config)
-   */
-  sqlite3_prepare(
-    db,
-    "SELECT Domain FROM block_exact WHERE Domain = ?",
-    -1,
-    &db_block_exact,
-    NULL
-  );
+  /* Step 2: block_exact (Domain) → IPSetTerminate */
+  if (sqlite3_prepare(db, "SELECT Domain FROM block_exact WHERE Domain = ?", -1, &db_block_exact, NULL) != SQLITE_OK) {
+    fprintf(stderr, "CRITICAL: Failed to prepare block_exact: %s\n", sqlite3_errmsg(db));
+    exit(1);
+  }
 
-  /* Domain Aliasing: Redirect domain queries
-   * Applied BEFORE DNS resolution
-   * Example: old.domain.com → new.domain.com
-   * Use Case: CNAME-like functionality, domain redirection
-   */
-  sqlite3_prepare(
-    db,
-    "SELECT Target_Domain FROM domain_alias WHERE Source_Domain = ?",
-    -1,
-    &db_domain_alias,
-    NULL
-  );
+  /* Domain Aliasing: Redirect domain queries */
+  if (sqlite3_prepare(db, "SELECT Target_Domain FROM domain_alias WHERE Source_Domain = ?", -1, &db_domain_alias, NULL) != SQLITE_OK) {
+    fprintf(stderr, "WARNING: Failed to prepare domain_alias (optional table): %s\n", sqlite3_errmsg(db));
+    db_domain_alias = NULL;
+  }
 
-  /* IP Rewriting: IPv4 address translation
-   * Applied AFTER DNS resolution to rewrite response IPs
-   * Example: DNS returns 178.223.16.21 → rewrite to 10.20.0.10
-   * Use Case: NAT, private network mapping
-   */
-  sqlite3_prepare(
-    db,
-    "SELECT Target_IPv4 FROM ip_rewrite_v4 WHERE Source_IPv4 = ?",
-    -1,
-    &db_ip_rewrite_v4,
-    NULL
-  );
+  /* IP Rewriting: IPv4 address translation */
+  if (sqlite3_prepare(db, "SELECT Target_IPv4 FROM ip_rewrite_v4 WHERE Source_IPv4 = ?", -1, &db_ip_rewrite_v4, NULL) != SQLITE_OK) {
+    fprintf(stderr, "WARNING: Failed to prepare ip_rewrite_v4 (optional table): %s\n", sqlite3_errmsg(db));
+    db_ip_rewrite_v4 = NULL;
+  }
 
-  /* IP Rewriting: IPv6 address translation
-   * Applied AFTER DNS resolution to rewrite response IPs
-   * Example: DNS returns 2001:db8::1 → rewrite to fd00::10
-   * Use Case: IPv6 NAT, ULA mapping
-   */
-  sqlite3_prepare(
-    db,
-    "SELECT Target_IPv6 FROM ip_rewrite_v6 WHERE Source_IPv6 = ?",
-    -1,
-    &db_ip_rewrite_v6,
-    NULL
-  );
+  /* IP Rewriting: IPv6 address translation */
+  if (sqlite3_prepare(db, "SELECT Target_IPv6 FROM ip_rewrite_v6 WHERE Source_IPv6 = ?", -1, &db_ip_rewrite_v6, NULL) != SQLITE_OK) {
+    fprintf(stderr, "WARNING: Failed to prepare ip_rewrite_v6 (optional table): %s\n", sqlite3_errmsg(db));
+    db_ip_rewrite_v6 = NULL;
+  }
 
   /* Step 3: block_wildcard (Domain) → IPSetDNSBlock
    * Wildcard domain match (includes subdomains!)
@@ -464,32 +418,17 @@ static void db_init_internal(void)
     exit(1);  // NOLINT(concurrency-mt-unsafe) - called at init only
   }
 
-  /* Step 4: fqdn_dns_allow (Domain) → IPSetDNSAllow
-   * DNS Allow (Whitelist) - Forward to real DNS servers
-   * Example: trusted.xyz → forward to 8.8.8.8 (normal resolution)
-   * Priority: Checked BEFORE fqdn_dns_block (whitelist overrides blacklist)
-   */
-  sqlite3_prepare(
-    db,
-    "SELECT Domain FROM fqdn_dns_allow WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
-    -1,
-    &db_fqdn_dns_allow,
-    NULL
-  );
+  /* Step 4: fqdn_dns_allow (Domain) → IPSetDNSAllow */
+  if (sqlite3_prepare(db, "SELECT Domain FROM fqdn_dns_allow WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1", -1, &db_fqdn_dns_allow, NULL) != SQLITE_OK) {
+    fprintf(stderr, "WARNING: Failed to prepare fqdn_dns_allow (optional table): %s\n", sqlite3_errmsg(db));
+    db_fqdn_dns_allow = NULL;
+  }
 
-  /* Step 5: fqdn_dns_block (Domain) → IPSetDNSBlock
-   * DNS Block (Blacklist) - Forward to blocker DNS servers
-   * Example: *.xyz → forward to 127.0.0.1#5353 (blocker returns 0.0.0.0)
-   * Priority: Checked AFTER fqdn_dns_allow (step 5 after step 4)
-   */
-  sqlite3_prepare(
-    db,
-    "SELECT Domain FROM fqdn_dns_block WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1",
-    -1,
-    &db_fqdn_dns_block,
-    NULL
-  );
-  /* Note: Ignore error if table doesn't exist - it's optional */
+  /* Step 5: fqdn_dns_block (Domain) → IPSetDNSBlock */
+  if (sqlite3_prepare(db, "SELECT Domain FROM fqdn_dns_block WHERE Domain = ? OR ? LIKE '%.' || Domain ORDER BY length(Domain) DESC LIMIT 1", -1, &db_fqdn_dns_block, NULL) != SQLITE_OK) {
+    fprintf(stderr, "WARNING: Failed to prepare fqdn_dns_block (optional table): %s\n", sqlite3_errmsg(db));
+    db_fqdn_dns_block = NULL;
+  }
 
   /* Initialize performance optimizations */
   lru_init();
@@ -775,11 +714,19 @@ static void db_pool_cleanup(void)
 /* Get connection for current thread (round-robin assignment)
  * PERFORMANCE FIX: Now actively used for 5-7x throughput improvement
  * Each thread gets its own dedicated connection → no lock contention
+ * CRITICAL FIX: Protected by mutex to prevent TOCTOU race condition
  */
 static db_connection_t *db_get_thread_connection(void)
 {
-  if (!db_pool_initialized)
+  /* CRITICAL FIX: Use mutex to prevent race condition on pool_initialized check */
+  pthread_mutex_lock(&db_pool_init_mutex);
+
+  if (!db_pool_initialized) {
+    pthread_mutex_unlock(&db_pool_init_mutex);
     return NULL;
+  }
+
+  pthread_mutex_unlock(&db_pool_init_mutex);
 
   /* Check if this thread already has a connection assigned */
   db_connection_t *conn = (db_connection_t *)pthread_getspecific(db_thread_key);
@@ -1488,16 +1435,16 @@ char* db_get_domain_alias(const char *source_domain)
            * Preserve subdomain prefix (e.g., www.) */
           size_t prefix_len = dot - source_domain + 1;  /* Length including the dot */
 
-          /* Check buffer size (256 bytes should be enough for any domain) */
+          /* Check buffer size (1024 bytes allocated now) */
           if (prefix_len + strlen((const char *)target_domain) + 1 > sizeof(tls_domain_buffer))
           {
-            fprintf(stderr, "Domain alias too long: %s\n", source_domain);
+            fprintf(stderr, "Domain alias too long: %s (>1024 bytes)\n", source_domain);
             return NULL;
           }
 
-          /* Build result in TLS buffer */
-          strncpy(tls_domain_buffer, source_domain, prefix_len);
-          strcpy(tls_domain_buffer + prefix_len, (const char *)target_domain);
+          /* CRITICAL FIX: Use snprintf instead of strncpy+strcpy to prevent buffer overflow */
+          snprintf(tls_domain_buffer, sizeof(tls_domain_buffer), "%.*s%s",
+                   (int)prefix_len, source_domain, (const char *)target_domain);
 
           printf("Domain Alias (wildcard): %s → %s (parent: %s → %s)\n",
                  source_domain, tls_domain_buffer, parent_domain, (const char *)target_domain);
@@ -1835,8 +1782,11 @@ static void bloom_load(void)
 
   /* Query all domains from block_exact */
   sqlite3_stmt *stmt;
-  if (sqlite3_prepare(db, "SELECT Domain FROM block_exact", -1, &stmt, NULL) != SQLITE_OK)
+  int rc = sqlite3_prepare(db, "SELECT Domain FROM block_exact", -1, &stmt, NULL);
+  if (rc != SQLITE_OK) {
+    fprintf(stderr, "WARNING: Failed to prepare bloom_load query: %s\n", sqlite3_errmsg(db));
     return;
+  }
 
   int count = 0;
   while (sqlite3_step(stmt) == SQLITE_ROW)
