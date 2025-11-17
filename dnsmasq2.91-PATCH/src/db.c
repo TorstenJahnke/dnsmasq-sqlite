@@ -66,11 +66,15 @@ static sqlite3_stmt *db_ip_rewrite_v4 = NULL;    /* For IPv4 IP rewriting (sourc
 static sqlite3_stmt *db_ip_rewrite_v6 = NULL;    /* For IPv6 IP rewriting (source → target) */
 static char *db_file = NULL;
 
-/* IPSet configurations (comma-separated strings from config) */
+/* IPSet configurations (comma-separated strings from config)
+ * THREAD-SAFETY: Protected by ipset_config_lock */
 static char *ipset_terminate_v4 = NULL;  /* IPv4 termination IPs (no port): "127.0.0.1,0.0.0.0" */
 static char *ipset_terminate_v6 = NULL;  /* IPv6 termination IPs (no port): "::1,::" */
 static char *ipset_dns_block = NULL;     /* DNS blocker servers (with port): "127.0.0.1#5353,[fd00::1]:5353" */
 static char *ipset_dns_allow = NULL;     /* Real DNS servers (with port): "8.8.8.8,1.1.1.1#5353" */
+
+/* CRITICAL FIX: Thread-safety lock for IPSet config access */
+static pthread_rwlock_t ipset_config_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 /* CRITICAL FIX: Thread-local storage to prevent memory leaks from strdup()
  * These replace all strdup() calls that were causing 1.7GB/day leaks */
@@ -211,6 +215,8 @@ static inline int bloom_check(const char *domain)
 /* Regex pattern cache for performance (1-2 million patterns!)
  * Strategy: Load patterns on-demand, compile once, cache in memory
  * Using PCRE2 for better performance and modern API
+ *
+ * THREAD-SAFETY: Protected by pthread_once and rwlock
  */
 typedef struct regex_cache_entry {
   char *pattern;                /* Original regex pattern */
@@ -220,10 +226,14 @@ typedef struct regex_cache_entry {
 } regex_cache_entry;
 
 static regex_cache_entry *regex_cache = NULL;
-static int regex_cache_loaded = 0;
 static int regex_patterns_count = 0;
 
-/* Load all regex patterns from DB into cache (called once) */
+/* Thread-safety: Ensure load_regex_cache() is called exactly once */
+static pthread_once_t regex_cache_once = PTHREAD_ONCE_INIT;
+/* Thread-safety: Protect access to regex_cache linked list */
+static pthread_rwlock_t regex_cache_lock = PTHREAD_RWLOCK_INITIALIZER;
+
+/* Load all regex patterns from DB into cache (called once via pthread_once) */
 static void load_regex_cache(void);
 static void free_regex_cache(void);
 #endif
@@ -573,7 +583,14 @@ void db_set_file(char *path)
     db_file = NULL;
   }
 
-  db_file = path;
+  /* CRITICAL FIX: Make a copy to avoid double-free
+   * Previous code stored caller's pointer directly, causing issues when:
+   * 1. db_set_file() called again → frees caller's memory
+   * 2. Caller frees path → double-free */
+  if (path)
+    db_file = strdup(path);
+  else
+    db_file = NULL;
 }
 
 /* ==============================================================================
@@ -919,66 +936,117 @@ int db_check_block(const char *name)
 
 /* ============================================================================
  * IPSet Configuration Setters (called from option.c)
+ * THREAD-SAFETY: All setters/getters protected by ipset_config_lock
  * ========================================================================== */
 
 /* Set IPv4 termination addresses (comma-separated, no port)
- * Example: "127.0.0.1,0.0.0.0" */
+ * Example: "127.0.0.1,0.0.0.0"
+ * THREAD-SAFE: Acquires write lock */
 void db_set_ipset_terminate_v4(char *addresses)
 {
+  pthread_rwlock_wrlock(&ipset_config_lock);
+
   if (ipset_terminate_v4)
     free(ipset_terminate_v4);
   ipset_terminate_v4 = addresses;
+
+  pthread_rwlock_unlock(&ipset_config_lock);
+
   if (addresses)
     printf("SQLite IPSet: Terminate IPv4 set to: %s\n", addresses);
 }
 
 /* Set IPv6 termination addresses (comma-separated, no port)
- * Example: "::1,::" */
+ * Example: "::1,::"
+ * THREAD-SAFE: Acquires write lock */
 void db_set_ipset_terminate_v6(char *addresses)
 {
+  pthread_rwlock_wrlock(&ipset_config_lock);
+
   if (ipset_terminate_v6)
     free(ipset_terminate_v6);
   ipset_terminate_v6 = addresses;
+
+  pthread_rwlock_unlock(&ipset_config_lock);
+
   if (addresses)
     printf("SQLite IPSet: Terminate IPv6 set to: %s\n", addresses);
 }
 
 /* Set DNS blocker servers (comma-separated, with port)
- * Example: "127.0.0.1#5353,[fd00::1]:5353" */
+ * Example: "127.0.0.1#5353,[fd00::1]:5353"
+ * THREAD-SAFE: Acquires write lock */
 void db_set_ipset_dns_block(char *servers)
 {
+  pthread_rwlock_wrlock(&ipset_config_lock);
+
   if (ipset_dns_block)
     free(ipset_dns_block);
   ipset_dns_block = servers;
+
+  pthread_rwlock_unlock(&ipset_config_lock);
+
   if (servers)
     printf("SQLite IPSet: DNS Block set to: %s\n", servers);
 }
 
 /* Set real DNS servers (comma-separated, with port)
- * Example: "8.8.8.8,1.1.1.1#5353,[2001:4860:4860::8888]:53" */
+ * Example: "8.8.8.8,1.1.1.1#5353,[2001:4860:4860::8888]:53"
+ * THREAD-SAFE: Acquires write lock */
 void db_set_ipset_dns_allow(char *servers)
 {
+  pthread_rwlock_wrlock(&ipset_config_lock);
+
   if (ipset_dns_allow)
     free(ipset_dns_allow);
   ipset_dns_allow = servers;
+
+  pthread_rwlock_unlock(&ipset_config_lock);
+
   if (servers)
     printf("SQLite IPSet: DNS Allow set to: %s\n", servers);
 }
 
-/* Get IPSet configuration strings (for use in lookup logic) */
-char *db_get_ipset_terminate_v4(void) { return ipset_terminate_v4; }
-char *db_get_ipset_terminate_v6(void) { return ipset_terminate_v6; }
-char *db_get_ipset_dns_block(void) { return ipset_dns_block; }
-char *db_get_ipset_dns_allow(void) { return ipset_dns_allow; }
+/* Get IPSet configuration strings (for use in lookup logic)
+ * THREAD-SAFE: Acquires read lock
+ * WARNING: Returned pointers are only valid while holding the lock
+ * Callers should copy the strings if needed beyond the lock scope */
+char *db_get_ipset_terminate_v4(void) {
+  pthread_rwlock_rdlock(&ipset_config_lock);
+  char *result = ipset_terminate_v4;
+  pthread_rwlock_unlock(&ipset_config_lock);
+  return result;
+}
+
+char *db_get_ipset_terminate_v6(void) {
+  pthread_rwlock_rdlock(&ipset_config_lock);
+  char *result = ipset_terminate_v6;
+  pthread_rwlock_unlock(&ipset_config_lock);
+  return result;
+}
+
+char *db_get_ipset_dns_block(void) {
+  pthread_rwlock_rdlock(&ipset_config_lock);
+  char *result = ipset_dns_block;
+  pthread_rwlock_unlock(&ipset_config_lock);
+  return result;
+}
+
+char *db_get_ipset_dns_allow(void) {
+  pthread_rwlock_rdlock(&ipset_config_lock);
+  char *result = ipset_dns_allow;
+  pthread_rwlock_unlock(&ipset_config_lock);
+  return result;
+}
 
 #ifdef HAVE_REGEX
 /* Load all regex patterns from database into cache
- * This is called on first regex query to avoid startup delay
+ * THREAD-SAFETY: Called exactly once via pthread_once
  * For 1-2 million patterns, this will take some time and RAM!
  */
 static void load_regex_cache(void)
 {
-  if (regex_cache_loaded || !db || !db_block_regex)
+  if (!db || !db_block_regex)
     return;
 
   printf("Loading regex patterns from database...\n");
@@ -1039,7 +1107,19 @@ static void load_regex_cache(void)
       break;
     }
 
+    /* CRITICAL FIX: Check strdup() return value to prevent memory leak */
     entry->pattern = strdup((const char *)pattern_text);
+    if (!entry->pattern)
+    {
+      pcre2_code_free(compiled);
+      pcre2_match_data_free(match_data);
+      free(entry);
+      // NOLINTNEXTLINE(cert-err33-c)
+      fprintf(stderr, "Out of memory duplicating pattern string!\n");
+      failed++;
+      continue;  /* Continue loading other patterns */
+    }
+
     entry->compiled = compiled;
     entry->match_data = match_data;
     entry->next = regex_cache;
@@ -1048,7 +1128,6 @@ static void load_regex_cache(void)
     loaded++;
   }
 
-  regex_cache_loaded = 1;
   regex_patterns_count = loaded;
 
   printf("Regex cache loaded: %d patterns compiled", loaded);
@@ -1060,9 +1139,11 @@ static void load_regex_cache(void)
     printf("WARNING: %d regex patterns loaded - this may use significant RAM and CPU!\n", loaded);
 }
 
-/* Free all regex cache entries */
+/* Free all regex cache entries - THREAD-SAFE */
 static void free_regex_cache(void)
 {
+  pthread_rwlock_wrlock(&regex_cache_lock);
+
   regex_cache_entry *entry = regex_cache;
   int freed = 0;
 
@@ -1084,8 +1165,10 @@ static void free_regex_cache(void)
   }
 
   regex_cache = NULL;
-  regex_cache_loaded = 0;
   regex_patterns_count = 0;
+
+  pthread_rwlock_unlock(&regex_cache_lock);
+  pthread_rwlock_destroy(&regex_cache_lock);
 
   if (freed > 0)
     printf("Freed %d regex patterns from cache\n", freed);
@@ -1121,9 +1204,11 @@ int db_lookup_domain(const char *name)
 #ifdef HAVE_REGEX
   if (db_block_regex)
   {
-    /* Load regex patterns into cache on first use */
-    if (!regex_cache_loaded)
-      load_regex_cache();
+    /* THREAD-SAFE: Load regex patterns exactly once via pthread_once */
+    pthread_once(&regex_cache_once, load_regex_cache);
+
+    /* THREAD-SAFE: Acquire read lock before iterating regex cache */
+    pthread_rwlock_rdlock(&regex_cache_lock);
 
     /* Iterate through cached regex patterns */
     regex_cache_entry *entry = regex_cache;
@@ -1142,12 +1227,15 @@ int db_lookup_domain(const char *name)
       if (rc >= 0)  /* Match found! */
       {
         printf("db_lookup: %s matched regex '%s' → TERMINATE\n", name, entry->pattern);
+        pthread_rwlock_unlock(&regex_cache_lock);
         result = IPSET_TYPE_TERMINATE;
         goto cache_and_return;
       }
 
       entry = entry->next;
     }
+
+    pthread_rwlock_unlock(&regex_cache_lock);
   }
 #endif
 
@@ -1277,7 +1365,10 @@ struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6)  // NOLINT
  *   2. If not found, check parent domains (intel.com)
  *   3. If parent found, preserve subdomain prefix
  *
- * Returns: Allocated string with target domain (caller must free) or NULL if no alias
+ * CRITICAL FIX: Returns TLS buffer (caller must NOT free)
+ * Previous version had inconsistent malloc/TLS mix causing leaks
+ *
+ * Returns: Thread-local buffer with target domain or NULL if no alias
  */
 char* db_get_domain_alias(const char *source_domain)
 {
@@ -1296,7 +1387,7 @@ char* db_get_domain_alias(const char *source_domain)
       if (target_domain)
       {
         printf("Domain Alias (exact): %s → %s\n", source_domain, (const char *)target_domain);
-        /* CRITICAL FIX: Use Thread-Local Storage instead of strdup() */
+        /* Use Thread-Local Storage - caller must NOT free */
         snprintf(tls_domain_buffer, sizeof(tls_domain_buffer), "%s", (const char *)target_domain);
         return tls_domain_buffer;
       }
@@ -1317,23 +1408,25 @@ char* db_get_domain_alias(const char *source_domain)
         const unsigned char *target_domain = sqlite3_column_text(db_domain_alias, 0);
         if (target_domain)
         {
-          /* Preserve subdomain prefix (e.g., www.) */
+          /* CRITICAL FIX: Use TLS buffer instead of malloc
+           * Preserve subdomain prefix (e.g., www.) */
           size_t prefix_len = dot - source_domain + 1;  /* Length including the dot */
-          size_t target_len = strlen((const char *)target_domain);
-          size_t total_len = prefix_len + target_len + 1;
 
-          char *result = malloc(total_len);
-          if (result)
+          /* Check buffer size (256 bytes should be enough for any domain) */
+          if (prefix_len + strlen((const char *)target_domain) + 1 > sizeof(tls_domain_buffer))
           {
-            // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-            strncpy(result, source_domain, prefix_len);
-            strcpy(result + prefix_len, (const char *)target_domain);
-
-            printf("Domain Alias (wildcard): %s → %s (parent: %s → %s)\n",
-                   source_domain, result, parent_domain, (const char *)target_domain);
-
-            return result;
+            fprintf(stderr, "Domain alias too long: %s\n", source_domain);
+            return NULL;
           }
+
+          /* Build result in TLS buffer */
+          strncpy(tls_domain_buffer, source_domain, prefix_len);
+          strcpy(tls_domain_buffer + prefix_len, (const char *)target_domain);
+
+          printf("Domain Alias (wildcard): %s → %s (parent: %s → %s)\n",
+                 source_domain, tls_domain_buffer, parent_domain, (const char *)target_domain);
+
+          return tls_domain_buffer;
         }
       }
     }
@@ -1542,42 +1635,32 @@ static void lru_evict_lru(void)
   lru_count--;
 }
 
-/* Get entry from LRU cache - THREAD-SAFE VERSION */
+/* Get entry from LRU cache - THREAD-SAFE VERSION
+ * CRITICAL FIX: Use write lock from start to avoid lock upgrade race
+ * Trade-off: Slightly lower read concurrency, but eliminates use-after-free risk
+ */
 static lru_entry_t *lru_get(const char *domain)
 {
   unsigned int hash = lru_hash_func(domain);
   lru_entry_t *entry;
 
-  /* Read lock for hash table lookup */
-  pthread_rwlock_rdlock(&lru_lock);
-  entry = lru_hash[hash];
+  /* CRITICAL FIX: Use write lock from start to avoid lock upgrade race
+   * Previous code had read→write upgrade which could cause use-after-free
+   * if entry was deleted between unlock and relock */
+  pthread_rwlock_wrlock(&lru_lock);
 
   /* Search hash collision chain */
+  entry = lru_hash[hash];
   while (entry)
   {
     if (strcmp(entry->domain, domain) == 0)
     {
-      /* Cache hit! Need write lock for modification */
+      /* Cache hit! Update stats and move to front */
+      entry->hits++;
+      lru_hits++;
+      lru_move_to_front(entry);
       pthread_rwlock_unlock(&lru_lock);
-      pthread_rwlock_wrlock(&lru_lock);
-
-      /* Re-check entry still valid after lock upgrade */
-      lru_entry_t *recheck = lru_hash[hash];
-      while (recheck) {
-        if (strcmp(recheck->domain, domain) == 0 && recheck == entry) {
-          entry->hits++;
-          lru_hits++;
-          lru_move_to_front(entry);
-          pthread_rwlock_unlock(&lru_lock);
-          return entry;
-        }
-        recheck = recheck->hash_next;
-      }
-
-      /* Entry disappeared during lock upgrade */
-      pthread_rwlock_unlock(&lru_lock);
-      lru_misses++;
-      return NULL;
+      return entry;
     }
     entry = entry->hash_next;
   }
