@@ -256,12 +256,24 @@ static void db_pool_cleanup(void);
 static db_connection_t *db_get_thread_connection(void);
 static int db_prepare_pool_statements(db_connection_t *conn);
 
+/* CRITICAL FIX: Thread-safe initialization with pthread_once */
+static pthread_once_t db_init_once = PTHREAD_ONCE_INIT;
+static void db_init_internal(void);
+
 void db_init(void)
 {
-  if (!db_file || db)
-  {
+  if (!db_file)
     return;
-  }
+
+  /* CRITICAL FIX: Ensure db_init_internal() is called exactly once
+   * Previous code had race condition - multiple threads could initialize simultaneously */
+  pthread_once(&db_init_once, db_init_internal);
+}
+
+static void db_init_internal(void)
+{
+  if (db)  /* Already initialized by another thread */
+    return;
 
   /* Register cleanup handler - check return value but continue if it fails
    * Note: exit() in cleanup is only called at shutdown, no threading issues */
@@ -946,14 +958,16 @@ int db_check_block(const char *name)
 
 /* Set IPv4 termination addresses (comma-separated, no port)
  * Example: "127.0.0.1,0.0.0.0"
- * THREAD-SAFE: Acquires write lock */
+ * THREAD-SAFE: Acquires write lock
+ * CRITICAL FIX: Makes copy with strdup() to prevent dangling pointers */
 void db_set_ipset_terminate_v4(char *addresses)
 {
   pthread_rwlock_wrlock(&ipset_config_lock);
 
   if (ipset_terminate_v4)
     free(ipset_terminate_v4);
-  ipset_terminate_v4 = addresses;
+
+  ipset_terminate_v4 = addresses ? strdup(addresses) : NULL;
 
   pthread_rwlock_unlock(&ipset_config_lock);
 
@@ -963,14 +977,16 @@ void db_set_ipset_terminate_v4(char *addresses)
 
 /* Set IPv6 termination addresses (comma-separated, no port)
  * Example: "::1,::"
- * THREAD-SAFE: Acquires write lock */
+ * THREAD-SAFE: Acquires write lock
+ * CRITICAL FIX: Makes copy with strdup() to prevent dangling pointers */
 void db_set_ipset_terminate_v6(char *addresses)
 {
   pthread_rwlock_wrlock(&ipset_config_lock);
 
   if (ipset_terminate_v6)
     free(ipset_terminate_v6);
-  ipset_terminate_v6 = addresses;
+
+  ipset_terminate_v6 = addresses ? strdup(addresses) : NULL;
 
   pthread_rwlock_unlock(&ipset_config_lock);
 
@@ -980,14 +996,16 @@ void db_set_ipset_terminate_v6(char *addresses)
 
 /* Set DNS blocker servers (comma-separated, with port)
  * Example: "127.0.0.1#5353,[fd00::1]:5353"
- * THREAD-SAFE: Acquires write lock */
+ * THREAD-SAFE: Acquires write lock
+ * CRITICAL FIX: Makes copy with strdup() to prevent dangling pointers */
 void db_set_ipset_dns_block(char *servers)
 {
   pthread_rwlock_wrlock(&ipset_config_lock);
 
   if (ipset_dns_block)
     free(ipset_dns_block);
-  ipset_dns_block = servers;
+
+  ipset_dns_block = servers ? strdup(servers) : NULL;
 
   pthread_rwlock_unlock(&ipset_config_lock);
 
@@ -997,14 +1015,16 @@ void db_set_ipset_dns_block(char *servers)
 
 /* Set real DNS servers (comma-separated, with port)
  * Example: "8.8.8.8,1.1.1.1#5353,[2001:4860:4860::8888]:53"
- * THREAD-SAFE: Acquires write lock */
+ * THREAD-SAFE: Acquires write lock
+ * CRITICAL FIX: Makes copy with strdup() to prevent dangling pointers */
 void db_set_ipset_dns_allow(char *servers)
 {
   pthread_rwlock_wrlock(&ipset_config_lock);
 
   if (ipset_dns_allow)
     free(ipset_dns_allow);
-  ipset_dns_allow = servers;
+
+  ipset_dns_allow = servers ? strdup(servers) : NULL;
 
   pthread_rwlock_unlock(&ipset_config_lock);
 
@@ -1013,35 +1033,63 @@ void db_set_ipset_dns_allow(char *servers)
 }
 
 /* Get IPSet configuration strings (for use in lookup logic)
- * THREAD-SAFE: Acquires read lock
- * WARNING: Returned pointers are only valid while holding the lock
- * Callers should copy the strings if needed beyond the lock scope */
+ * CRITICAL FIX: Returns TLS buffer to prevent Use-After-Free
+ * Previous version returned raw pointer which could be freed by another thread
+ *
+ * Thread-safe: Uses TLS buffer (caller must NOT free)
+ */
+static __thread char tls_ipset_buffer[512];
+
 char *db_get_ipset_terminate_v4(void) {
   pthread_rwlock_rdlock(&ipset_config_lock);
-  char *result = ipset_terminate_v4;
+
+  if (ipset_terminate_v4) {
+    snprintf(tls_ipset_buffer, sizeof(tls_ipset_buffer), "%s", ipset_terminate_v4);
+    pthread_rwlock_unlock(&ipset_config_lock);
+    return tls_ipset_buffer;
+  }
+
   pthread_rwlock_unlock(&ipset_config_lock);
-  return result;
+  return NULL;
 }
 
 char *db_get_ipset_terminate_v6(void) {
   pthread_rwlock_rdlock(&ipset_config_lock);
-  char *result = ipset_terminate_v6;
+
+  if (ipset_terminate_v6) {
+    snprintf(tls_ipset_buffer, sizeof(tls_ipset_buffer), "%s", ipset_terminate_v6);
+    pthread_rwlock_unlock(&ipset_config_lock);
+    return tls_ipset_buffer;
+  }
+
   pthread_rwlock_unlock(&ipset_config_lock);
-  return result;
+  return NULL;
 }
 
 char *db_get_ipset_dns_block(void) {
   pthread_rwlock_rdlock(&ipset_config_lock);
-  char *result = ipset_dns_block;
+
+  if (ipset_dns_block) {
+    snprintf(tls_ipset_buffer, sizeof(tls_ipset_buffer), "%s", ipset_dns_block);
+    pthread_rwlock_unlock(&ipset_config_lock);
+    return tls_ipset_buffer;
+  }
+
   pthread_rwlock_unlock(&ipset_config_lock);
-  return result;
+  return NULL;
 }
 
 char *db_get_ipset_dns_allow(void) {
   pthread_rwlock_rdlock(&ipset_config_lock);
-  char *result = ipset_dns_allow;
+
+  if (ipset_dns_allow) {
+    snprintf(tls_ipset_buffer, sizeof(tls_ipset_buffer), "%s", ipset_dns_allow);
+    pthread_rwlock_unlock(&ipset_config_lock);
+    return tls_ipset_buffer;
+  }
+
   pthread_rwlock_unlock(&ipset_config_lock);
-  return result;
+  return NULL;
 }
 
 #ifdef HAVE_REGEX
