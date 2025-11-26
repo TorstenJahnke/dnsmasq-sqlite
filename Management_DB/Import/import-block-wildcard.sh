@@ -6,6 +6,7 @@
 # Target: IPSetDNSBlock (forward to DNS blocker)
 # Match: Domain AND all subdomains!
 # Usage: ./import-block-wildcard.sh <database> <input-file>
+# Version: 4.1 - Added temp file cleanup trap
 # ============================================================================
 
 DB_FILE="${1}"
@@ -23,19 +24,19 @@ if [ -z "$DB_FILE" ] || [ -z "$INPUT_FILE" ]; then
     echo "  tracking.company.net"
     echo ""
     echo "Wildcard matching (includes ALL subdomains!):"
-    echo "  privacy.com → privacy.com AND *.privacy.com BLOCKED"
-    echo "  tracking.company.net → tracking.company.net AND *.tracking.company.net BLOCKED"
+    echo "  privacy.com -> privacy.com AND *.privacy.com BLOCKED"
+    echo "  tracking.company.net -> tracking.company.net AND *.tracking.company.net BLOCKED"
     echo ""
     exit 1
 fi
 
 if [ ! -f "$DB_FILE" ]; then
-    echo "❌ Error: Database '$DB_FILE' not found!"
+    echo "Error: Database '$DB_FILE' not found!"
     exit 1
 fi
 
 if [ ! -f "$INPUT_FILE" ]; then
-    echo "❌ Error: Input file '$INPUT_FILE' not found!"
+    echo "Error: Input file '$INPUT_FILE' not found!"
     exit 1
 fi
 
@@ -55,6 +56,9 @@ START_TIME=$(date +%s)
 # Pre-process
 echo "Pre-processing domains..."
 TEMP_FILE=$(mktemp)
+# CRITICAL FIX v4.1: Trap to ensure temp file cleanup on error
+trap "rm -f '$TEMP_FILE'" EXIT
+
 tr '[:upper:]' '[:lower:]' < "$INPUT_FILE" | \
     sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
     grep -v '^#' | \
@@ -84,16 +88,14 @@ COMMIT;
 SELECT 'Imported into block_wildcard: ' || COUNT(*) || ' domains' FROM block_wildcard;
 EOF
 
-rm -f "$TEMP_FILE"
-
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
 
 echo ""
-echo "✅ Import completed in ${ELAPSED} seconds"
+echo "Import completed in ${ELAPSED} seconds"
 echo ""
 
 CURRENT_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM block_wildcard;")
 echo "Total wildcard domains: $CURRENT_COUNT"
 echo ""
-echo "Done! 🚀"
+echo "Done!"
