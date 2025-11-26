@@ -5,6 +5,7 @@
 # Priority: 1 (HIGHEST)
 # Target: IPSetTerminate (direct blocking)
 # Usage: ./import-block-regex.sh <database> <input-file>
+# Version: 4.1 - Fixed temp table creation bug
 # ============================================================================
 
 DB_FILE="${1}"
@@ -25,12 +26,12 @@ if [ -z "$DB_FILE" ] || [ -z "$INPUT_FILE" ]; then
 fi
 
 if [ ! -f "$DB_FILE" ]; then
-    echo "❌ Error: Database '$DB_FILE' not found!"
+    echo "Error: Database '$DB_FILE' not found!"
     exit 1
 fi
 
 if [ ! -f "$INPUT_FILE" ]; then
-    echo "❌ Error: Input file '$INPUT_FILE' not found!"
+    echo "Error: Input file '$INPUT_FILE' not found!"
     exit 1
 fi
 
@@ -49,6 +50,16 @@ echo ""
 # Start import
 START_TIME=$(date +%s)
 
+# Pre-process: Remove empty lines and comments
+echo "Pre-processing patterns..."
+TEMP_FILE=$(mktemp)
+# Trap to ensure temp file cleanup on error
+trap "rm -f '$TEMP_FILE'" EXIT
+
+sed 's/^[[:space:]]*//;s/[[:space:]]*$//' < "$INPUT_FILE" | \
+    grep -v '^#' | \
+    grep -v '^$' > "$TEMP_FILE"
+
 sqlite3 "$DB_FILE" <<EOF
 -- Use transaction for speed (100x faster!)
 BEGIN TRANSACTION;
@@ -57,13 +68,15 @@ BEGIN TRANSACTION;
 .mode list
 .separator "\n"
 
--- Read from file and insert
--- INSERT OR IGNORE: Skip duplicates automatically (PRIMARY KEY prevents duplicates)
-.import '${INPUT_FILE}' temp_import_block_regex
+-- CRITICAL FIX v4.1: Create temp table BEFORE import
+CREATE TEMP TABLE temp_import_block_regex (Pattern TEXT);
+
+-- Read from file and insert into temp table
+.import '${TEMP_FILE}' temp_import_block_regex
 
 -- Copy to actual table (ignore duplicates)
 INSERT OR IGNORE INTO block_regex (Pattern)
-SELECT DISTINCT Pattern FROM temp_import_block_regex
+SELECT DISTINCT TRIM(Pattern) FROM temp_import_block_regex
 WHERE Pattern IS NOT NULL
   AND Pattern != ''
   AND LENGTH(TRIM(Pattern)) > 0;
@@ -81,11 +94,11 @@ END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
 
 echo ""
-echo "✅ Import completed in ${ELAPSED} seconds"
+echo "Import completed in ${ELAPSED} seconds"
 echo ""
 
 # Show current count
 CURRENT_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM block_regex;")
 echo "Total patterns in block_regex: $CURRENT_COUNT"
 echo ""
-echo "Done! 🚀"
+echo "Done!"
