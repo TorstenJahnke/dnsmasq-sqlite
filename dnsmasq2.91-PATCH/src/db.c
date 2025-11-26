@@ -2,8 +2,22 @@
 #ifdef HAVE_SQLITE
 
 /* ==============================================================================
+ * DNSMASQ-SQLITE DATABASE INTERFACE
+ * ==============================================================================
+ * Version: 4.1
+ * Date: 2025-11-26
+ *
+ * CHANGELOG v4.1:
+ *   - Fixed TLS buffer conflict: Each db_get_ipset_* function now uses its
+ *     own dedicated TLS buffer to prevent data corruption when calling
+ *     multiple functions in sequence
+ *   - Fixed race condition: lru_misses++ now incremented inside lock
+ *   - Improved pthread_t portability: Use byte-wise hashing instead of
+ *     direct cast to unsigned long (pthread_t may be struct on some BSDs)
+ *   - Fixed misleading log message about EXCLUSIVE locking
+ *
  * CODE QUALITY NOTES:
- * - All fprintf() calls use constant format strings (no user input) → safe
+ * - All fprintf() calls use constant format strings (no user input) -> safe
  * - NOLINT directives suppress false positive warnings from static analyzers
  * - Return value checks added where necessary for critical operations
  * ============================================================================== */
@@ -354,7 +368,7 @@ static void db_init_internal(void)
 
 #undef CHECK_PRAGMA
 
-  printf("SQLite ENTERPRISE optimizations enabled (128 GB RAM: mmap=2GB, cache=100GB, threads=8, EXCLUSIVE locking)\n");
+  printf("SQLite ENTERPRISE optimizations enabled (128 GB RAM: mmap=OFF, cache=40GB, threads=8, WAL mode)\n");
 
   /* ========================================================================
    * NEW LOOKUP ORDER (Schema v4.0):
@@ -734,9 +748,16 @@ static db_connection_t *db_get_thread_connection(void)
   if (conn)
     return conn;  /* Return cached connection for this thread */
 
-  /* Assign a connection using thread ID modulo pool size (simple round-robin) */
+  /* CRITICAL FIX v4.1: Portable thread ID hashing
+   * pthread_t may not be a numeric type on all platforms (e.g., struct on some BSDs)
+   * Use a simple hash of the thread ID bytes for portability */
   pthread_t tid = pthread_self();
-  int pool_index = ((unsigned long)tid) % DB_POOL_SIZE;
+  unsigned int hash = 0;
+  unsigned char *tid_bytes = (unsigned char *)&tid;
+  for (size_t i = 0; i < sizeof(pthread_t); i++) {
+    hash = hash * 31 + tid_bytes[i];
+  }
+  int pool_index = hash % DB_POOL_SIZE;
 
   conn = &db_pool[pool_index];
   pthread_setspecific(db_thread_key, conn);
@@ -983,17 +1004,22 @@ void db_set_ipset_dns_allow(char *servers)
  * CRITICAL FIX: Returns TLS buffer to prevent Use-After-Free
  * Previous version returned raw pointer which could be freed by another thread
  *
- * Thread-safe: Uses TLS buffer (caller must NOT free)
+ * Thread-safe: Each function uses its OWN TLS buffer (caller must NOT free)
+ * CRITICAL FIX v4.1: Separate buffers per function to prevent data corruption
+ * when calling multiple db_get_ipset_* functions in sequence
  */
-static __thread char tls_ipset_buffer[512];
+static __thread char tls_ipset_terminate_v4_buf[512];
+static __thread char tls_ipset_terminate_v6_buf[512];
+static __thread char tls_ipset_dns_block_buf[512];
+static __thread char tls_ipset_dns_allow_buf[512];
 
 char *db_get_ipset_terminate_v4(void) {
   pthread_rwlock_rdlock(&ipset_config_lock);
 
   if (ipset_terminate_v4) {
-    snprintf(tls_ipset_buffer, sizeof(tls_ipset_buffer), "%s", ipset_terminate_v4);
+    snprintf(tls_ipset_terminate_v4_buf, sizeof(tls_ipset_terminate_v4_buf), "%s", ipset_terminate_v4);
     pthread_rwlock_unlock(&ipset_config_lock);
-    return tls_ipset_buffer;
+    return tls_ipset_terminate_v4_buf;
   }
 
   pthread_rwlock_unlock(&ipset_config_lock);
@@ -1004,9 +1030,9 @@ char *db_get_ipset_terminate_v6(void) {
   pthread_rwlock_rdlock(&ipset_config_lock);
 
   if (ipset_terminate_v6) {
-    snprintf(tls_ipset_buffer, sizeof(tls_ipset_buffer), "%s", ipset_terminate_v6);
+    snprintf(tls_ipset_terminate_v6_buf, sizeof(tls_ipset_terminate_v6_buf), "%s", ipset_terminate_v6);
     pthread_rwlock_unlock(&ipset_config_lock);
-    return tls_ipset_buffer;
+    return tls_ipset_terminate_v6_buf;
   }
 
   pthread_rwlock_unlock(&ipset_config_lock);
@@ -1017,9 +1043,9 @@ char *db_get_ipset_dns_block(void) {
   pthread_rwlock_rdlock(&ipset_config_lock);
 
   if (ipset_dns_block) {
-    snprintf(tls_ipset_buffer, sizeof(tls_ipset_buffer), "%s", ipset_dns_block);
+    snprintf(tls_ipset_dns_block_buf, sizeof(tls_ipset_dns_block_buf), "%s", ipset_dns_block);
     pthread_rwlock_unlock(&ipset_config_lock);
-    return tls_ipset_buffer;
+    return tls_ipset_dns_block_buf;
   }
 
   pthread_rwlock_unlock(&ipset_config_lock);
@@ -1030,9 +1056,9 @@ char *db_get_ipset_dns_allow(void) {
   pthread_rwlock_rdlock(&ipset_config_lock);
 
   if (ipset_dns_allow) {
-    snprintf(tls_ipset_buffer, sizeof(tls_ipset_buffer), "%s", ipset_dns_allow);
+    snprintf(tls_ipset_dns_allow_buf, sizeof(tls_ipset_dns_allow_buf), "%s", ipset_dns_allow);
     pthread_rwlock_unlock(&ipset_config_lock);
-    return tls_ipset_buffer;
+    return tls_ipset_dns_allow_buf;
   }
 
   pthread_rwlock_unlock(&ipset_config_lock);
@@ -1688,9 +1714,9 @@ static lru_entry_t *lru_get(const char *domain)
     entry = entry->hash_next;
   }
 
-  /* Cache miss */
-  pthread_rwlock_unlock(&lru_lock);
+  /* Cache miss - CRITICAL FIX v4.1: Increment inside lock to prevent race condition */
   lru_misses++;
+  pthread_rwlock_unlock(&lru_lock);
   return NULL;
 }
 

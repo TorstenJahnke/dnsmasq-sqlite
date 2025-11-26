@@ -209,6 +209,76 @@ BEGIN
     AND record_type = 'dns_block';
 END;
 
+-- =====================================================
+-- ADDITIONAL VIEWS for domain_alias and ip_rewrite (v4.1)
+-- =====================================================
+
+-- domain_alias view
+CREATE VIEW IF NOT EXISTS domain_alias AS
+  SELECT d.domain AS Source_Domain, r.target_value AS Target_Domain
+  FROM records r
+  JOIN domains d ON r.domain_id = d.domain_id
+  WHERE r.record_type = 'domain_alias';
+
+CREATE TRIGGER IF NOT EXISTS insert_domain_alias
+INSTEAD OF INSERT ON domain_alias
+BEGIN
+  INSERT OR IGNORE INTO domains (domain) VALUES (NEW.Source_Domain);
+  INSERT OR IGNORE INTO records (domain_id, record_type, target_value)
+    SELECT domain_id, 'domain_alias', NEW.Target_Domain FROM domains WHERE domain = NEW.Source_Domain;
+END;
+
+CREATE TRIGGER IF NOT EXISTS delete_domain_alias
+INSTEAD OF DELETE ON domain_alias
+BEGIN
+  DELETE FROM records WHERE domain_id = (SELECT domain_id FROM domains WHERE domain = OLD.Source_Domain)
+    AND record_type = 'domain_alias';
+END;
+
+-- ip_rewrite_v4 view
+CREATE VIEW IF NOT EXISTS ip_rewrite_v4 AS
+  SELECT d.domain AS Source_IPv4, r.target_value AS Target_IPv4
+  FROM records r
+  JOIN domains d ON r.domain_id = d.domain_id
+  WHERE r.record_type = 'ip_rewrite_v4';
+
+CREATE TRIGGER IF NOT EXISTS insert_ip_rewrite_v4
+INSTEAD OF INSERT ON ip_rewrite_v4
+BEGIN
+  INSERT OR IGNORE INTO domains (domain) VALUES (NEW.Source_IPv4);
+  INSERT OR IGNORE INTO records (domain_id, record_type, target_value)
+    SELECT domain_id, 'ip_rewrite_v4', NEW.Target_IPv4 FROM domains WHERE domain = NEW.Source_IPv4;
+END;
+
+CREATE TRIGGER IF NOT EXISTS delete_ip_rewrite_v4
+INSTEAD OF DELETE ON ip_rewrite_v4
+BEGIN
+  DELETE FROM records WHERE domain_id = (SELECT domain_id FROM domains WHERE domain = OLD.Source_IPv4)
+    AND record_type = 'ip_rewrite_v4';
+END;
+
+-- ip_rewrite_v6 view
+CREATE VIEW IF NOT EXISTS ip_rewrite_v6 AS
+  SELECT d.domain AS Source_IPv6, r.target_value AS Target_IPv6
+  FROM records r
+  JOIN domains d ON r.domain_id = d.domain_id
+  WHERE r.record_type = 'ip_rewrite_v6';
+
+CREATE TRIGGER IF NOT EXISTS insert_ip_rewrite_v6
+INSTEAD OF INSERT ON ip_rewrite_v6
+BEGIN
+  INSERT OR IGNORE INTO domains (domain) VALUES (NEW.Source_IPv6);
+  INSERT OR IGNORE INTO records (domain_id, record_type, target_value)
+    SELECT domain_id, 'ip_rewrite_v6', NEW.Target_IPv6 FROM domains WHERE domain = NEW.Source_IPv6;
+END;
+
+CREATE TRIGGER IF NOT EXISTS delete_ip_rewrite_v6
+INSTEAD OF DELETE ON ip_rewrite_v6
+BEGIN
+  DELETE FROM records WHERE domain_id = (SELECT domain_id FROM domains WHERE domain = OLD.Source_IPv6)
+    AND record_type = 'ip_rewrite_v6';
+END;
+
 -- Metadata
 CREATE TABLE IF NOT EXISTS db_metadata (
     key TEXT PRIMARY KEY,
@@ -217,10 +287,10 @@ CREATE TABLE IF NOT EXISTS db_metadata (
 
 INSERT OR REPLACE INTO db_metadata (key, value) VALUES
     ('created', datetime('now')),
-    ('schema_version', '2.0-normalized'),
+    ('schema_version', '4.1'),
     ('phase', 'Phase 1+2'),
     ('hardware', 'HP-DL20-128GB'),
-    ('features', 'connection_pool,thread_safe,normalized,73pct_savings');
+    ('features', 'connection_pool,thread_safe,normalized,73pct_savings,domain_alias,ip_rewrite');
 
 -- Optimize
 PRAGMA optimize;

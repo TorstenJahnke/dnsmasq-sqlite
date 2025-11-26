@@ -278,9 +278,53 @@ COMMIT;
 -- Recommendation: Start with Option 1 (views), optimize to Option 2 later
 
 -- ==============================================================================
+-- ADDITIONAL VIEWS for domain_alias and ip_rewrite (v4.1)
+-- ==============================================================================
+
+-- View: domain_alias (domain redirection with target)
+CREATE VIEW IF NOT EXISTS v_domain_alias_full AS
+SELECT
+  d.domain AS Source_Domain,
+  r.target_value AS Target_Domain,
+  r.record_id,
+  r.priority
+FROM records r
+JOIN domains d ON r.domain_id = d.domain_id
+WHERE r.record_type = 'domain_alias';
+
+-- View: ip_rewrite_v4 (IPv4 translation with target)
+CREATE VIEW IF NOT EXISTS v_ip_rewrite_v4_full AS
+SELECT
+  d.domain AS Source_IPv4,
+  r.target_value AS Target_IPv4,
+  r.record_id,
+  r.priority
+FROM records r
+JOIN domains d ON r.domain_id = d.domain_id
+WHERE r.record_type = 'ip_rewrite_v4';
+
+-- View: ip_rewrite_v6 (IPv6 translation with target)
+CREATE VIEW IF NOT EXISTS v_ip_rewrite_v6_full AS
+SELECT
+  d.domain AS Source_IPv6,
+  r.target_value AS Target_IPv6,
+  r.record_id,
+  r.priority
+FROM records r
+JOIN domains d ON r.domain_id = d.domain_id
+WHERE r.record_type = 'ip_rewrite_v6';
+
+-- ==============================================================================
 -- AUTHOR & VERSION
 -- ==============================================================================
 -- Author: Claude (Phase 2 Optimization)
--- Date: 2025-11-16
--- Version: 2.0 (Normalized Schema)
--- Branch: claude/code-review-performance-01ChAhVrJnKmCqZzxZH7Qb4o
+-- Date: 2025-11-26
+-- Version: 4.1 (Normalized Schema with domain_alias and ip_rewrite support)
+-- Branch: claude/review-and-optimize-01LNSUhDXx2e2VUDJWotRCb7
+--
+-- CHANGELOG v4.1:
+--   - Added domain_alias, ip_rewrite_v4, ip_rewrite_v6 views
+--   - Fixed TLS buffer conflicts in db.c
+--   - Fixed race condition in lru_misses counter
+--   - Improved pthread_t portability
+--   - Added SQL injection protection to scripts
