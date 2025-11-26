@@ -287,10 +287,10 @@ CREATE TABLE IF NOT EXISTS db_metadata (
 
 INSERT OR REPLACE INTO db_metadata (key, value) VALUES
     ('created', datetime('now')),
-    ('schema_version', '4.1'),
+    ('schema_version', '4.2'),
     ('phase', 'Phase 1+2'),
     ('hardware', 'HP-DL20-128GB'),
-    ('features', 'connection_pool,thread_safe,normalized,73pct_savings,domain_alias,ip_rewrite');
+    ('features', 'connection_pool,thread_safe,normalized,73pct_savings,domain_alias,ip_rewrite,suffix_wildcard');
 
 -- Optimize
 PRAGMA optimize;
