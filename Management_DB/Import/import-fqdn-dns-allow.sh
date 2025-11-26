@@ -6,6 +6,7 @@
 # Target: IPSetDNSAllow (forward to real DNS servers)
 # Use case: Whitelist domains that would otherwise be blocked
 # Usage: ./import-fqdn-dns-allow.sh <database> <input-file>
+# Version: 4.1 - Added temp file cleanup trap
 # ============================================================================
 
 DB_FILE="${1}"
@@ -33,12 +34,12 @@ if [ -z "$DB_FILE" ] || [ -z "$INPUT_FILE" ]; then
 fi
 
 if [ ! -f "$DB_FILE" ]; then
-    echo "❌ Error: Database '$DB_FILE' not found!"
+    echo "Error: Database '$DB_FILE' not found!"
     exit 1
 fi
 
 if [ ! -f "$INPUT_FILE" ]; then
-    echo "❌ Error: Input file '$INPUT_FILE' not found!"
+    echo "Error: Input file '$INPUT_FILE' not found!"
     exit 1
 fi
 
@@ -56,6 +57,9 @@ echo ""
 START_TIME=$(date +%s)
 
 TEMP_FILE=$(mktemp)
+# CRITICAL FIX v4.1: Trap to ensure temp file cleanup on error
+trap "rm -f '$TEMP_FILE'" EXIT
+
 tr '[:upper:]' '[:lower:]' < "$INPUT_FILE" | \
     sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
     grep -v '^#' | \
@@ -85,16 +89,14 @@ COMMIT;
 SELECT 'Imported into fqdn_dns_allow: ' || COUNT(*) || ' domains' FROM fqdn_dns_allow;
 EOF
 
-rm -f "$TEMP_FILE"
-
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
 
 echo ""
-echo "✅ Import completed in ${ELAPSED} seconds"
+echo "Import completed in ${ELAPSED} seconds"
 echo ""
 
 CURRENT_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM fqdn_dns_allow;")
 echo "Total whitelisted domains: $CURRENT_COUNT"
 echo ""
-echo "Done! 🚀"
+echo "Done!"

@@ -6,6 +6,7 @@
 # Target: IPSetDNSBlock (forward to DNS blocker)
 # Use case: Block entire TLDs or domain patterns
 # Usage: ./import-fqdn-dns-block.sh <database> <input-file>
+# Version: 4.1 - Added temp file cleanup trap
 # ============================================================================
 
 DB_FILE="${1}"
@@ -23,22 +24,22 @@ if [ -z "$DB_FILE" ] || [ -z "$INPUT_FILE" ]; then
     echo "  phishing-site.tk"
     echo ""
     echo "Use case - TLD blocking:"
-    echo "  *.xyz → Blocks all .xyz domains"
-    echo "  *.tk → Blocks all .tk domains"
+    echo "  *.xyz -> Blocks all .xyz domains"
+    echo "  *.tk -> Blocks all .tk domains"
     echo ""
     echo "Priority: Checked AFTER fqdn_dns_allow (step 5 after step 4)"
-    echo "  → fqdn_dns_allow can override this table!"
+    echo "  -> fqdn_dns_allow can override this table!"
     echo ""
     exit 1
 fi
 
 if [ ! -f "$DB_FILE" ]; then
-    echo "❌ Error: Database '$DB_FILE' not found!"
+    echo "Error: Database '$DB_FILE' not found!"
     exit 1
 fi
 
 if [ ! -f "$INPUT_FILE" ]; then
-    echo "❌ Error: Input file '$INPUT_FILE' not found!"
+    echo "Error: Input file '$INPUT_FILE' not found!"
     exit 1
 fi
 
@@ -56,6 +57,9 @@ echo ""
 START_TIME=$(date +%s)
 
 TEMP_FILE=$(mktemp)
+# CRITICAL FIX v4.1: Trap to ensure temp file cleanup on error
+trap "rm -f '$TEMP_FILE'" EXIT
+
 tr '[:upper:]' '[:lower:]' < "$INPUT_FILE" | \
     sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
     grep -v '^#' | \
@@ -85,16 +89,14 @@ COMMIT;
 SELECT 'Imported into fqdn_dns_block: ' || COUNT(*) || ' domains' FROM fqdn_dns_block;
 EOF
 
-rm -f "$TEMP_FILE"
-
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
 
 echo ""
-echo "✅ Import completed in ${ELAPSED} seconds"
+echo "Import completed in ${ELAPSED} seconds"
 echo ""
 
 CURRENT_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM fqdn_dns_block;")
 echo "Total blacklisted domains: $CURRENT_COUNT"
 echo ""
-echo "Done! 🚀"
+echo "Done!"
