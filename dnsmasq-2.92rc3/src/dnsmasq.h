@@ -1965,16 +1965,28 @@ int add_update_server(int flags,
 		      const char *domain,
 		      union all_addr *local_addr);
 
-/* db.c */
+/* db.c - SQLite Simple Blocking v5.0 */
 #ifdef HAVE_SQLITE
-#include <sqlite3.h>
 
-void db_set_file(char *file);
-void db_set_block_ipv4(char *ip);
-void db_set_block_ipv6(char *ip);
+/* Configuration setters (called from option.c) */
+void db_set_file(char *path);           /* sqlite-database=/path/to/db */
+void db_set_tld2_file(char *path);      /* sqlite-tld2-list=/path/to/tld2.txt */
+void db_set_block_ipv4(char *ip);       /* sqlite-block-ipv4=0.0.0.0 */
+void db_set_block_ipv6(char *ip);       /* sqlite-block-ipv6=:: */
+
+/* Lifecycle */
 void db_init(void);
 void db_cleanup(void);
-int db_check_block(const char *domain);
-char *db_get_block_ipv4(void);
-char *db_get_block_ipv6(void);
+
+/* Blocking functions */
+int db_check_block(const char *domain);  /* Returns 1 if blocked */
+int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
+
+/* IP rewriting */
+char *db_get_rewrite_ip(const char *source_ip);  /* Returns target IP or NULL */
+
+/* Legacy compatibility */
+struct in_addr *db_get_block_ipv4(void);
+struct in6_addr *db_get_block_ipv6(void);
+
 #endif 
