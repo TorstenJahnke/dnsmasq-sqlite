@@ -454,6 +454,10 @@ static char *compile_opts =
 "no-"
 #endif
 "nftset "
+#ifndef HAVE_SQLITE
+"no-"
+#endif
+"SQLite "
 #ifndef HAVE_AUTH
 "no-"
 #endif
