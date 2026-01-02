@@ -127,10 +127,15 @@ int db_check_block(const char *name)
 {
   const char *p;
 
+  printf("SQLite: db_check_block called for: %s\n", name ? name : "(null)");
+
   db_init();
 
   if (!db)
+  {
+    printf("SQLite: db is NULL, cannot check\n");
     return 0;
+  }
 
   /* Check exact match first */
   if (stmt_exact)

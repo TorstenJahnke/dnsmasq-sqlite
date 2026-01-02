@@ -1668,8 +1668,10 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
 
 #ifdef HAVE_SQLITE
   /* SQLite Blocking: Check if domain should be blocked */
+  printf("SQLite rfc1035: checking %s (qclass=%d, qtype=%d)\n", name, qclass, qtype);
   if (qclass == C_IN && (qtype == T_A || qtype == T_AAAA))
     {
+      printf("SQLite rfc1035: calling db_check_block for %s\n", name);
       if (db_check_block(name))
         {
           /* Domain is blocked - return block IP */
