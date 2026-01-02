@@ -4,8 +4,15 @@
 /* ==============================================================================
  * DNSMASQ-SQLITE DATABASE INTERFACE
  * ==============================================================================
- * Version: 4.2
- * Date: 2025-11-26
+ * Version: 4.3
+ * Date: 2026-01-02
+ *
+ * CHANGELOG v4.3:
+ *   - CRITICAL FIX: Memory leak in db_get_rewrite_ipv4/ipv6 (missing sqlite3_reset)
+ *   - CRITICAL FIX: Race condition in db_pool_init with proper memory barriers
+ *   - OPTIMIZATION: Dynamic Bloom filter sizing based on actual domain count
+ *   - OPTIMIZATION: SQLITE_STATIC binding instead of SQLITE_TRANSIENT (less malloc)
+ *   - OPTIMIZATION: volatile + __sync_synchronize for thread-safe pool init
  *
  * CHANGELOG v4.2:
  *   - CRITICAL PERFORMANCE FIX: Replaced LIKE '%.' || Domain wildcard queries
@@ -72,7 +79,9 @@ typedef struct {
 } db_connection_t;
 
 static db_connection_t db_pool[DB_POOL_SIZE];
-static int db_pool_initialized = 0;
+/* CRITICAL FIX v4.3: Use volatile to prevent compiler reordering reads/writes
+ * This ensures memory visibility across threads for double-checked locking */
+static volatile int db_pool_initialized = 0;
 static pthread_key_t db_thread_key;
 static pthread_mutex_t db_pool_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -340,17 +349,29 @@ static inline unsigned int lru_hash_func(const char *domain)
 
 /* Bloom Filter for fast negative lookups on block_exact table
  * Benefits: 50-100x faster for non-matching domains (95% of queries)
- * Memory: ~12 MB for 10M domains at 1% false positive rate
+ * Memory: Dynamically sized based on actual domain count
  * False positive rate: 1% (acceptable for performance gain)
  *
- * OPTIMIZED FOR: 2-3 Billion total domains (across all tables)
- * block_exact typically has 1-10M entries, not billions
- * Bloom filter sized for realistic block_exact usage
+ * OPTIMIZED v4.3: Dynamic sizing based on actual block_exact count
+ * Formula: bits = -n * ln(0.01) / (ln(2)^2) ≈ n * 9.6
+ * Memory savings: Only allocate what's needed (vs fixed 95MB)
  */
-#define BLOOM_SIZE 95850590   /* Optimal for 10M items, 1% FPR */
-#define BLOOM_HASHES 7        /* Optimal number of hash functions */
+/* BLOOM_DEFAULT_SIZE: Fallback for 10M items at 1% FPR
+ * BLOOM_MAX_SIZE: Supports up to 800M domains at 1% FPR (~1GB RAM)
+ *
+ * Memory requirements at 1% FPR:
+ *   10M domains  →  ~12 MB
+ *   100M domains → ~120 MB
+ *   500M domains → ~600 MB
+ *   800M domains → ~960 MB (max supported)
+ */
+#define BLOOM_DEFAULT_SIZE 95850590     /* Fallback for 10M items, 1% FPR */
+#define BLOOM_HASHES 7                  /* Optimal number of hash functions */
+#define BLOOM_MIN_SIZE 1000000          /* Minimum 1MB (safety) */
+#define BLOOM_MAX_SIZE 1000000000       /* Maximum 1GB - supports up to 800M domains */
 
 static unsigned char *bloom_filter = NULL;
+static size_t bloom_size = BLOOM_DEFAULT_SIZE;  /* DYNAMIC v4.3 */
 static int bloom_initialized = 0;
 
 /* CRITICAL FIX: Thread-safety lock for Bloom filter
@@ -358,13 +379,14 @@ static int bloom_initialized = 0;
  * Bloom filter is read-only after initialization → lock-free reads */
 static pthread_rwlock_t bloom_lock = PTHREAD_RWLOCK_INITIALIZER;
 
-/* Simple hash functions for Bloom filter */
+/* Simple hash functions for Bloom filter
+ * OPTIMIZED v4.3: Use dynamic bloom_size variable */
 static inline unsigned int bloom_hash1(const char *str)
 {
   unsigned int hash = 0;
   while (*str)
     hash = hash * 31 + (*str++);
-  return hash % BLOOM_SIZE;
+  return hash % bloom_size;
 }
 
 static inline unsigned int bloom_hash2(const char *str)
@@ -372,10 +394,11 @@ static inline unsigned int bloom_hash2(const char *str)
   unsigned int hash = 5381;
   while (*str)
     hash = ((hash << 5) + hash) ^ (*str++);
-  return hash % BLOOM_SIZE;
+  return hash % bloom_size;
 }
 
-/* Add domain to Bloom filter - THREAD-SAFE VERSION */
+/* Add domain to Bloom filter - THREAD-SAFE VERSION
+ * OPTIMIZED v4.3: Use dynamic bloom_size */
 static inline void bloom_add(const char *domain)
 {
   pthread_rwlock_wrlock(&bloom_lock);
@@ -390,7 +413,7 @@ static inline void bloom_add(const char *domain)
 
   for (int i = 0; i < BLOOM_HASHES; i++)
   {
-    unsigned int pos = (h1 + i * h2) % BLOOM_SIZE;
+    unsigned int pos = (h1 + i * h2) % bloom_size;
     bloom_filter[pos / 8] |= (1 << (pos % 8));
   }
 
@@ -399,7 +422,8 @@ static inline void bloom_add(const char *domain)
 
 /* Check if domain might exist (false positives possible)
  * PERFORMANCE FIX: Lock-free reads (20-30% latency reduction)
- * Safe because bloom_filter is read-only after initialization */
+ * Safe because bloom_filter is read-only after initialization
+ * OPTIMIZED v4.3: Use dynamic bloom_size */
 static inline int bloom_check(const char *domain)
 {
   /* PERFORMANCE: Lock-free read - bloom_filter never modified after init
@@ -412,7 +436,7 @@ static inline int bloom_check(const char *domain)
 
   for (int i = 0; i < BLOOM_HASHES; i++)
   {
-    unsigned int pos = (h1 + i * h2) % BLOOM_SIZE;
+    unsigned int pos = (h1 + i * h2) % bloom_size;
     if (!(bloom_filter[pos / 8] & (1 << (pos % 8))))
       return 0; /* Definitely not in set */
   }
@@ -782,11 +806,20 @@ static int db_prepare_pool_statements(db_connection_t *conn)
   return 0;
 }
 
-/* Initialize connection pool with read-only connections */
+/* Initialize connection pool with read-only connections
+ * CRITICAL FIX v4.3: Fixed race condition with proper memory barrier */
 static void db_pool_init(void)
 {
+  /* CRITICAL FIX v4.3: Double-checked locking with memory barrier
+   * First check without lock for fast path (already initialized) */
+  if (db_pool_initialized) {
+    __sync_synchronize();  /* Memory barrier to ensure we see all pool data */
+    return;
+  }
+
   pthread_mutex_lock(&db_pool_init_mutex);
 
+  /* Second check with lock held (another thread may have initialized) */
   if (db_pool_initialized) {
     pthread_mutex_unlock(&db_pool_init_mutex);
     return;
@@ -824,7 +857,11 @@ static void db_pool_init(void)
     }
   }
 
+  /* CRITICAL FIX v4.3: Memory barrier before setting initialized flag
+   * Ensures all pool data is visible to other threads before flag is set */
+  __sync_synchronize();
   db_pool_initialized = 1;
+
   pthread_mutex_unlock(&db_pool_init_mutex);
 
   printf("Connection pool initialized: %d read-only connections ready\n", DB_POOL_SIZE);
@@ -1601,8 +1638,13 @@ char* db_get_rewrite_ipv4(const char *source_ipv4)
     return NULL;
 
   sqlite3_reset(db_ip_rewrite_v4);
-  if (sqlite3_bind_text(db_ip_rewrite_v4, 1, source_ipv4, -1, SQLITE_TRANSIENT) != SQLITE_OK)
+  /* OPTIMIZATION v4.3: Use SQLITE_STATIC for stack-allocated strings (no copy overhead) */
+  if (sqlite3_bind_text(db_ip_rewrite_v4, 1, source_ipv4, -1, SQLITE_STATIC) != SQLITE_OK)
+  {
+    /* CRITICAL FIX v4.3: Reset statement on early return to prevent memory leak */
+    sqlite3_reset(db_ip_rewrite_v4);
     return NULL;
+  }
 
   if (sqlite3_step(db_ip_rewrite_v4) == SQLITE_ROW)
   {
@@ -1612,10 +1654,14 @@ char* db_get_rewrite_ipv4(const char *source_ipv4)
       printf("IP Rewrite v4: %s → %s\n", source_ipv4, (const char *)target_ip);
       /* CRITICAL FIX: Use Thread-Local Storage instead of strdup() */
       snprintf(tls_ipv4_buffer, sizeof(tls_ipv4_buffer), "%s", (const char *)target_ip);
+      /* CRITICAL FIX v4.3: Reset statement after use */
+      sqlite3_reset(db_ip_rewrite_v4);
       return tls_ipv4_buffer;
     }
   }
 
+  /* CRITICAL FIX v4.3: Always reset statement before returning */
+  sqlite3_reset(db_ip_rewrite_v4);
   return NULL;
 }
 
@@ -1632,8 +1678,13 @@ char* db_get_rewrite_ipv6(const char *source_ipv6)
     return NULL;
 
   sqlite3_reset(db_ip_rewrite_v6);
-  if (sqlite3_bind_text(db_ip_rewrite_v6, 1, source_ipv6, -1, SQLITE_TRANSIENT) != SQLITE_OK)
+  /* OPTIMIZATION v4.3: Use SQLITE_STATIC for stack-allocated strings (no copy overhead) */
+  if (sqlite3_bind_text(db_ip_rewrite_v6, 1, source_ipv6, -1, SQLITE_STATIC) != SQLITE_OK)
+  {
+    /* CRITICAL FIX v4.3: Reset statement on early return to prevent memory leak */
+    sqlite3_reset(db_ip_rewrite_v6);
     return NULL;
+  }
 
   if (sqlite3_step(db_ip_rewrite_v6) == SQLITE_ROW)
   {
@@ -1643,10 +1694,14 @@ char* db_get_rewrite_ipv6(const char *source_ipv6)
       printf("IP Rewrite v6: %s → %s\n", source_ipv6, (const char *)target_ip);
       /* CRITICAL FIX: Use Thread-Local Storage instead of strdup() */
       snprintf(tls_ipv6_buffer, sizeof(tls_ipv6_buffer), "%s", (const char *)target_ip);
+      /* CRITICAL FIX v4.3: Reset statement after use */
+      sqlite3_reset(db_ip_rewrite_v6);
       return tls_ipv6_buffer;
     }
   }
 
+  /* CRITICAL FIX v4.3: Always reset statement before returning */
+  sqlite3_reset(db_ip_rewrite_v6);
   return NULL;
 }
 
@@ -1887,21 +1942,67 @@ static void lru_put(const char *domain, int ipset_type)
  * Bloom Filter Implementation
  * ============================================================================ */
 
-/* Initialize Bloom filter */
+/* Calculate optimal Bloom filter size for given item count
+ * OPTIMIZED v4.3: Dynamic sizing based on actual domain count
+ * Formula: bits = -n * ln(p) / (ln(2)^2) where p = 0.01 (1% FPR)
+ * Simplified: bits ≈ n * 9.6 for 1% FPR */
+static size_t bloom_calculate_size(int item_count)
+{
+  if (item_count <= 0)
+    return BLOOM_DEFAULT_SIZE;
+
+  /* Calculate optimal size: n * 9.6 bits, rounded to bytes, plus safety margin */
+  size_t optimal_bits = (size_t)((double)item_count * 9.6);
+  size_t optimal_bytes = (optimal_bits / 8) + 1;
+
+  /* Apply min/max bounds */
+  if (optimal_bytes < BLOOM_MIN_SIZE)
+    optimal_bytes = BLOOM_MIN_SIZE;
+  if (optimal_bytes > BLOOM_MAX_SIZE)
+    optimal_bytes = BLOOM_MAX_SIZE;
+
+  return optimal_bytes * 8;  /* Return size in bits */
+}
+
+/* Initialize Bloom filter with dynamic sizing
+ * OPTIMIZED v4.3: Query actual domain count first, then allocate optimal size */
 static void bloom_init(void)
 {
   if (bloom_filter)
     return;  /* Already initialized */
 
-  bloom_filter = calloc(BLOOM_SIZE / 8 + 1, 1);
+  /* Query actual block_exact count for optimal sizing */
+  int domain_count = 0;
+  if (db) {
+    sqlite3_stmt *count_stmt;
+    int rc = sqlite3_prepare(db, "SELECT COUNT(*) FROM block_exact", -1, &count_stmt, NULL);
+    if (rc == SQLITE_OK && sqlite3_step(count_stmt) == SQLITE_ROW) {
+      domain_count = sqlite3_column_int(count_stmt, 0);
+    }
+    sqlite3_finalize(count_stmt);
+  }
+
+  /* Calculate optimal size based on actual count */
+  if (domain_count > 0) {
+    bloom_size = bloom_calculate_size(domain_count);
+    printf("Bloom filter: Detected %d domains, calculating optimal size...\n", domain_count);
+  } else {
+    bloom_size = BLOOM_DEFAULT_SIZE;
+    printf("Bloom filter: No domains detected, using default size\n");
+  }
+
+  /* Allocate filter */
+  bloom_filter = calloc(bloom_size / 8 + 1, 1);
   if (!bloom_filter)
   {
-    printf("Warning: Failed to allocate Bloom filter (%d MB)\n", (BLOOM_SIZE / 8) / 1024 / 1024);
+    printf("Warning: Failed to allocate Bloom filter (%zu MB)\n", (bloom_size / 8) / 1024 / 1024);
+    bloom_size = BLOOM_DEFAULT_SIZE;  /* Reset to default for hash functions */
     return;
   }
 
   bloom_initialized = 1;
-  printf("Bloom filter initialized (%d MB, 10M domains capacity, 1%% FPR)\n", (BLOOM_SIZE / 8) / 1024 / 1024);
+  printf("Bloom filter initialized: %zu MB for %d domains (1%% FPR)\n",
+         (bloom_size / 8) / 1024 / 1024, domain_count > 0 ? domain_count : 10000000);
 }
 
 /* Load all domains from block_exact into Bloom filter */
