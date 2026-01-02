@@ -1185,6 +1185,9 @@ int db_lookup_domain(const char *name)
 
   /* NOTE: Regex check (Step 1) removed - will be reimplemented with Hyperscan */
 
+  printf("DEBUG: db_lookup_domain called for '%s'\n", name);
+  fflush(stdout);
+
   /* Step 2: Check block_exact (with Bloom filter optimization) */
   if (stmt_block_exact)
   {
@@ -1209,6 +1212,8 @@ int db_lookup_domain(const char *name)
   }
 
 step3:
+  printf("DEBUG: step3 - checking block_wildcard\n");
+  fflush(stdout);
 
   /* Step 3: Check block_wildcard
    * PERFORMANCE v4.2: Now uses suffix-based IN queries (100-1000x faster!)
@@ -1224,6 +1229,9 @@ step3:
       goto cache_and_return;
     }
   }
+
+  printf("DEBUG: step4 - checking fqdn_dns_allow\n");
+  fflush(stdout);
 
   /* Step 4: Check fqdn_dns_allow
    * PERFORMANCE v4.2: Suffix-based IN queries */
