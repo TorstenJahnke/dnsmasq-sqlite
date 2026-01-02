@@ -127,6 +127,14 @@ void db_set_block_ipv6(char *ip)
   block_ipv6 = ip;
 }
 
+/* Convert string to lowercase in-place */
+static void str_tolower(char *s)
+{
+  for (; *s; s++)
+    if (*s >= 'A' && *s <= 'Z')
+      *s += 32;
+}
+
 /* Extract base domain (last 2 parts): a.b.c.info.com -> info.com */
 static const char *get_base_domain(const char *name)
 {
@@ -149,14 +157,20 @@ static const char *get_base_domain(const char *name)
 int db_check_block(const char *name)
 {
   const char *base;
+  char name_lower[256];
 
   db_init();
 
   if (!db)
     return 0;
 
+  /* Convert to lowercase for case-insensitive matching */
+  strncpy(name_lower, name, sizeof(name_lower) - 1);
+  name_lower[sizeof(name_lower) - 1] = '\0';
+  str_tolower(name_lower);
+
   /* Get base domain (e.g., info.com from a.b.c.info.com) */
-  base = get_base_domain(name);
+  base = get_base_domain(name_lower);
 
   /* Check wildcard first (base domain) */
   if (stmt_wildcard)
@@ -171,7 +185,7 @@ int db_check_block(const char *name)
   if (stmt_exact)
   {
     sqlite3_reset(stmt_exact);
-    sqlite3_bind_text(stmt_exact, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt_exact, 1, name_lower, -1, SQLITE_STATIC);
     if (sqlite3_step(stmt_exact) == SQLITE_ROW)
       return 1;
   }
