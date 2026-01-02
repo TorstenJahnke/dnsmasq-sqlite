@@ -197,9 +197,6 @@ struct myoption {
 #define LOPT_DO_ENCODE     388
 #define LOPT_LEASEQUERY    389
 #define LOPT_SPLIT_RELAY   390
-#define LOPT_SQLITE_DB     391
-#define LOPT_BLOCK_IPV4    392
-#define LOPT_BLOCK_IPV6    393
 
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -401,11 +398,6 @@ static const struct myoption opts[] =
     { "no-ident", 0, 0, LOPT_NO_IDENT },
     { "max-tcp-connections", 1, 0, LOPT_MAX_PROCS },
     { "leasequery", 2, 0, LOPT_LEASEQUERY },
-#ifdef HAVE_SQLITE
-    { "sqlite-database", 1, 0, LOPT_SQLITE_DB },
-    { "sqlite-block-ipv4", 1, 0, LOPT_BLOCK_IPV4 },
-    { "sqlite-block-ipv6", 1, 0, LOPT_BLOCK_IPV6 },
-#endif
     { NULL, 0, 0, 0 }
   };
 
@@ -2302,20 +2294,6 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
     case 'x': /* --pid-file */
       daemon->runfile = opt_string_alloc(arg);
       break;
-
-#ifdef HAVE_SQLITE
-    case LOPT_SQLITE_DB: /* --sqlite-database */
-      db_set_file(opt_string_alloc(arg));
-      break;
-
-    case LOPT_BLOCK_IPV4: /* --sqlite-block-ipv4 */
-      db_set_ipset_terminate_v4(opt_string_alloc(arg));
-      break;
-
-    case LOPT_BLOCK_IPV6: /* --sqlite-block-ipv6 */
-      db_set_ipset_terminate_v6(opt_string_alloc(arg));
-      break;
-#endif
 
     case 'r': /* --resolv-file */
       {
