@@ -200,6 +200,7 @@ struct myoption {
 #define LOPT_SQLITE_DB     391
 #define LOPT_BLOCK_IPV4    392
 #define LOPT_BLOCK_IPV6    393
+#define LOPT_TLD2_FILE     394
 
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -405,6 +406,7 @@ static const struct myoption opts[] =
     { "sqlite-database", 1, 0, LOPT_SQLITE_DB },
     { "sqlite-block-ipv4", 1, 0, LOPT_BLOCK_IPV4 },
     { "sqlite-block-ipv6", 1, 0, LOPT_BLOCK_IPV6 },
+    { "sqlite-tld2-list", 1, 0, LOPT_TLD2_FILE },
 #endif
     { NULL, 0, 0, 0 }
   };
@@ -2309,11 +2311,15 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
       break;
 
     case LOPT_BLOCK_IPV4: /* --sqlite-block-ipv4 */
-      db_set_ipset_terminate_v4(opt_string_alloc(arg));
+      db_set_block_ipv4(opt_string_alloc(arg));
       break;
 
     case LOPT_BLOCK_IPV6: /* --sqlite-block-ipv6 */
-      db_set_ipset_terminate_v6(opt_string_alloc(arg));
+      db_set_block_ipv6(opt_string_alloc(arg));
+      break;
+
+    case LOPT_TLD2_FILE: /* --sqlite-tld2-list */
+      db_set_tld2_file(opt_string_alloc(arg));
       break;
 #endif
 

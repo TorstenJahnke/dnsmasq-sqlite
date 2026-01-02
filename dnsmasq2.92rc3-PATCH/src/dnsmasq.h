@@ -1965,52 +1965,28 @@ int add_update_server(int flags,
 		      const char *domain,
 		      union all_addr *local_addr);
 
-/* db.c */
+/* db.c - SQLite Simple Blocking v5.0 */
 #ifdef HAVE_SQLITE
-#include <sqlite3.h>
 
-void db_set_file(char *file);
+/* Configuration setters (called from option.c) */
+void db_set_file(char *path);           /* sqlite-database=/path/to/db */
+void db_set_tld2_file(char *path);      /* sqlite-tld2-list=/path/to/tld2.txt */
+void db_set_block_ipv4(char *ip);       /* sqlite-block-ipv4=0.0.0.0 */
+void db_set_block_ipv6(char *ip);       /* sqlite-block-ipv6=:: */
+
+/* Lifecycle */
 void db_init(void);
 void db_cleanup(void);
-char *db_get_forward_server(const char *domain);  /* DNS forwarding (returns server or NULL) */
-int db_check_block(const char *domain);
+
+/* Blocking functions */
+int db_check_block(const char *domain);  /* Returns 1 if blocked */
 int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
 
-/* Schema v6.2.1: IPSet types for lookup results */
-#define IPSET_TYPE_NONE       0  /* No match → use default DNS */
-#define IPSET_TYPE_TERMINATE  1  /* Direct termination (block_regex, block_exact) */
-#define IPSET_TYPE_DNS_BLOCK  2  /* Forward to DNS blocker (block_wildcard, fqdn_dns_block) */
-#define IPSET_TYPE_DNS_ALLOW  3  /* Forward to real DNS (fqdn_dns_allow) */
+/* IP rewriting */
+char *db_get_rewrite_ip(const char *source_ip);  /* Returns target IP or NULL */
 
-/* Schema v6.2.1: Lookup function */
-int db_lookup_domain(const char *domain);  /* Returns IPSET_TYPE_* constant */
-struct ipset_config *db_get_ipset_config(int ipset_type, int is_ipv6);
-
-/* Domain Aliasing: Redirect queries to different domain
- * Applied BEFORE DNS resolution (resolves alias instead of source)
- * Returns alias domain (caller must free) or NULL if no alias
- * Example: source="old.domain.com" → returns "new.domain.com"
- */
-char* db_get_domain_alias(const char *source_domain);
-
-/* IP-Rewriting: Rewrite IPs in DNS responses
- * Applied AFTER DNS resolution, before returning answer to client
- * Returns rewritten IP or NULL if no rewrite rule exists
- */
-char* db_get_rewrite_ipv4(const char *source_ipv4);
-char* db_get_rewrite_ipv6(const char *source_ipv6);
-
-/* Legacy functions for backward compatibility */
+/* Legacy compatibility */
 struct in_addr *db_get_block_ipv4(void);
 struct in6_addr *db_get_block_ipv6(void);
 
-/* IPSet configuration setters/getters */
-void db_set_ipset_terminate_v4(char *addresses);
-void db_set_ipset_terminate_v6(char *addresses);
-void db_set_ipset_dns_block(char *servers);
-void db_set_ipset_dns_allow(char *servers);
-char *db_get_ipset_terminate_v4(void);
-char *db_get_ipset_terminate_v6(void);
-char *db_get_ipset_dns_block(void);
-char *db_get_ipset_dns_allow(void);
 #endif 
