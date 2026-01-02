@@ -357,18 +357,23 @@ static inline unsigned int lru_hash_func(const char *domain)
  * Memory savings: Only allocate what's needed (vs fixed 95MB)
  */
 /* BLOOM_DEFAULT_SIZE: Fallback for 10M items at 1% FPR
- * BLOOM_MAX_SIZE: Supports up to 800M domains at 1% FPR (~1GB RAM)
+ * BLOOM_MAX_SIZE: Supports up to 3.5B domains at 1% FPR (~4GB RAM)
  *
  * Memory requirements at 1% FPR:
- *   10M domains  →  ~12 MB
- *   100M domains → ~120 MB
- *   500M domains → ~600 MB
- *   800M domains → ~960 MB (max supported)
+ *   10M domains   →    ~12 MB
+ *   100M domains  →   ~120 MB
+ *   500M domains  →   ~600 MB
+ *   1B domains    →   ~1.2 GB
+ *   2B domains    →   ~2.4 GB
+ *   3B domains    →   ~3.6 GB
+ *   3.5B domains  →   ~4.2 GB (max supported)
+ *
+ * For HP DL20 G10+ with 128GB RAM, 4GB Bloom filter is <4% of total RAM
  */
 #define BLOOM_DEFAULT_SIZE 95850590     /* Fallback for 10M items, 1% FPR */
 #define BLOOM_HASHES 7                  /* Optimal number of hash functions */
 #define BLOOM_MIN_SIZE 1000000          /* Minimum 1MB (safety) */
-#define BLOOM_MAX_SIZE 1000000000       /* Maximum 1GB - supports up to 800M domains */
+#define BLOOM_MAX_SIZE 4500000000UL     /* Maximum ~4.5GB - supports up to 3.5B domains */
 
 static unsigned char *bloom_filter = NULL;
 static size_t bloom_size = BLOOM_DEFAULT_SIZE;  /* DYNAMIC v4.3 */
@@ -1945,8 +1950,9 @@ static void lru_put(const char *domain, int ipset_type)
 /* Calculate optimal Bloom filter size for given item count
  * OPTIMIZED v4.3: Dynamic sizing based on actual domain count
  * Formula: bits = -n * ln(p) / (ln(2)^2) where p = 0.01 (1% FPR)
- * Simplified: bits ≈ n * 9.6 for 1% FPR */
-static size_t bloom_calculate_size(int item_count)
+ * Simplified: bits ≈ n * 9.6 for 1% FPR
+ * NOTE: Uses int64_t to support up to 3.5 billion domains */
+static size_t bloom_calculate_size(int64_t item_count)
 {
   if (item_count <= 0)
     return BLOOM_DEFAULT_SIZE;
@@ -1965,19 +1971,20 @@ static size_t bloom_calculate_size(int item_count)
 }
 
 /* Initialize Bloom filter with dynamic sizing
- * OPTIMIZED v4.3: Query actual domain count first, then allocate optimal size */
+ * OPTIMIZED v4.3: Query actual domain count first, then allocate optimal size
+ * NOTE: Uses sqlite3_column_int64 to support up to 3.5 billion domains */
 static void bloom_init(void)
 {
   if (bloom_filter)
     return;  /* Already initialized */
 
   /* Query actual block_exact count for optimal sizing */
-  int domain_count = 0;
+  int64_t domain_count = 0;
   if (db) {
     sqlite3_stmt *count_stmt;
     int rc = sqlite3_prepare(db, "SELECT COUNT(*) FROM block_exact", -1, &count_stmt, NULL);
     if (rc == SQLITE_OK && sqlite3_step(count_stmt) == SQLITE_ROW) {
-      domain_count = sqlite3_column_int(count_stmt, 0);
+      domain_count = sqlite3_column_int64(count_stmt, 0);  /* int64 for 3B+ domains */
     }
     sqlite3_finalize(count_stmt);
   }
@@ -1985,7 +1992,7 @@ static void bloom_init(void)
   /* Calculate optimal size based on actual count */
   if (domain_count > 0) {
     bloom_size = bloom_calculate_size(domain_count);
-    printf("Bloom filter: Detected %d domains, calculating optimal size...\n", domain_count);
+    printf("Bloom filter: Detected %lld domains, calculating optimal size...\n", (long long)domain_count);
   } else {
     bloom_size = BLOOM_DEFAULT_SIZE;
     printf("Bloom filter: No domains detected, using default size\n");
@@ -2001,8 +2008,8 @@ static void bloom_init(void)
   }
 
   bloom_initialized = 1;
-  printf("Bloom filter initialized: %zu MB for %d domains (1%% FPR)\n",
-         (bloom_size / 8) / 1024 / 1024, domain_count > 0 ? domain_count : 10000000);
+  printf("Bloom filter initialized: %zu MB for %lld domains (1%% FPR)\n",
+         (bloom_size / 8) / 1024 / 1024, (long long)(domain_count > 0 ? domain_count : 10000000));
 }
 
 /* Load all domains from block_exact into Bloom filter */
