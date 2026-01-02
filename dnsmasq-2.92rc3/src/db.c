@@ -114,6 +114,7 @@ void db_cleanup(void)
 /* Set database file path */
 void db_set_file(char *path)
 {
+  printf("SQLite: db_set_file called with: %s\n", path ? path : "(null)");
   if (db_file)
     free(db_file);
   db_file = path ? strdup(path) : NULL;
@@ -122,6 +123,7 @@ void db_set_file(char *path)
 /* Set block IPv4 address */
 void db_set_block_ipv4(char *ip)
 {
+  printf("SQLite: db_set_block_ipv4 called with: %s\n", ip ? ip : "(null)");
   if (block_ipv4)
     free(block_ipv4);
   block_ipv4 = ip ? strdup(ip) : NULL;
@@ -130,6 +132,7 @@ void db_set_block_ipv4(char *ip)
 /* Set block IPv6 address */
 void db_set_block_ipv6(char *ip)
 {
+  printf("SQLite: db_set_block_ipv6 called with: %s\n", ip ? ip : "(null)");
   if (block_ipv6)
     free(block_ipv6);
   block_ipv6 = ip ? strdup(ip) : NULL;
@@ -179,25 +182,39 @@ static int check_wildcard(const char *domain)
 /* Main check function: returns 1 if domain should be blocked */
 int db_check_block(const char *domain)
 {
+  int blocked = 0;
+
+  if (!db_file)
+  {
+    printf("SQLite: db_file is NULL, skipping check\n");
+    return 0;
+  }
+
   db_init();
 
   if (!db)
-    return 0;  /* No database = don't block */
+  {
+    printf("SQLite: db is NULL, skipping check\n");
+    return 0;
+  }
 
   /* Check exact match first */
   if (check_exact(domain))
-    return 1;
-
+    blocked = 1;
   /* Check wildcard match */
-  if (check_wildcard(domain))
-    return 1;
+  else if (check_wildcard(domain))
+    blocked = 1;
 
-  return 0;  /* Not blocked */
+  printf("SQLite: check_block(%s) = %d\n", domain, blocked);
+
+  return blocked;
 }
 
 /* Get block IPs (returns 1 if should block, fills in IPs) */
 int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out)
 {
+  printf("SQLite: db_get_block_ips(%s) called\n", domain ? domain : "(null)");
+
   if (ipv4_out) *ipv4_out = NULL;
   if (ipv6_out) *ipv6_out = NULL;
 
@@ -211,6 +228,9 @@ int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out)
   if (ipv6_out && block_ipv6)
     *ipv6_out = block_ipv6;
 
+  printf("SQLite: BLOCKING %s -> %s / %s\n", domain,
+         block_ipv4 ? block_ipv4 : "-",
+         block_ipv6 ? block_ipv6 : "-");
   return 1;
 }
 
