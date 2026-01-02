@@ -342,7 +342,8 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
 	  ede = EDE_INVALID_DATA;
 	  goto reply;
 	}
-      
+
+      /* Normal domain lookup for forwarding */
       if (lookup_domain(daemon->namebuff, gotname, &first, &last))
 	flags = is_local_answer(now, first, daemon->namebuff);
       else
@@ -359,7 +360,7 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
 	  !strchr(daemon->namebuff, '.') &&
 	  strlen(daemon->namebuff) != 0)
 	flags = check_for_local_domain(daemon->namebuff, now) ? F_NOERR : F_NXDOMAIN;
-      
+
       /* Configured answer. */
       if (flags || ede == EDE_NOT_READY)
 	goto reply;
@@ -3185,7 +3186,7 @@ static struct frec *get_new_frec(time_t now, struct server *master, int force)
 static void query_full(time_t now, char *domain)
 {
   static time_t last_log = 0;
-  
+
   if ((int)difftime(now, last_log) > 5)
     {
       last_log = now;

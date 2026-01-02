@@ -662,6 +662,11 @@ struct allowlist {
   struct allowlist *next;
 };
 
+struct ipset_config {
+  union mysockaddr servers[3];  /* Up to 3 servers/IPs */
+  int count;                     /* Number of configured entries */
+};
+
 struct irec {
   union mysockaddr addr;
   struct in_addr netmask; /* only valid for IPv4 */
@@ -1200,6 +1205,10 @@ extern struct daemon {
   int server_has_wildcard;
   int serverarraysz, serverarrayhwm;
   struct ipsets *ipsets, *nftsets;
+  struct ipset_config ipset_terminate_v4;
+  struct ipset_config ipset_terminate_v6;
+  struct ipset_config ipset_dns_block;
+  struct ipset_config ipset_dns_allow;
   u32 allowlist_mask;
   struct allowlist *allowlists;
   int log_fac; /* log facility */
@@ -1956,14 +1965,16 @@ int add_update_server(int flags,
 		      const char *domain,
 		      union all_addr *local_addr);
 
-/* db.c - SQLite blocking */
+/* db.c */
 #ifdef HAVE_SQLITE
 #include <sqlite3.h>
-void db_init(void);
-void db_cleanup(void);
-void db_set_file(char *path);
+
+void db_set_file(char *file);
 void db_set_block_ipv4(char *ip);
 void db_set_block_ipv6(char *ip);
+void db_init(void);
+void db_cleanup(void);
 int db_check_block(const char *domain);
-int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
+char *db_get_block_ipv4(void);
+char *db_get_block_ipv6(void);
 #endif 

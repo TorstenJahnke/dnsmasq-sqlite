@@ -1664,48 +1664,49 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
   GETSHORT(qtype, p);
   GETSHORT(qclass, p);
 
-/* SQLITE BLOCKING DISABLED FOR TESTING
-#ifdef HAVE_SQLITE
-  {
-    char *block_ipv4 = NULL, *block_ipv6 = NULL;
-    if (db_get_block_ips(name, &block_ipv4, &block_ipv6))
-      {
-        union all_addr block_addr;
-        int blocked = 0;
-        if (qtype == T_A && block_ipv4 && inet_pton(AF_INET, block_ipv4, &block_addr.addr4) == 1)
-          {
-            log_query(F_CONFIG | F_FORWARD | F_IPV4, name, &block_addr, "blocked", 0);
-            if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
-                                    daemon->local_ttl, NULL, T_A, C_IN, "4", &block_addr))
-              anscount++;
-            blocked = 1;
-          }
-        else if (qtype == T_AAAA && block_ipv6 && inet_pton(AF_INET6, block_ipv6, &block_addr.addr6) == 1)
-          {
-            log_query(F_CONFIG | F_FORWARD | F_IPV6, name, &block_addr, "blocked", 0);
-            if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
-                                    daemon->local_ttl, NULL, T_AAAA, C_IN, "6", &block_addr))
-              anscount++;
-            blocked = 1;
-          }
-        if (blocked)
-          {
-            header->hb3 = (header->hb3 & ~(HB3_AA | HB3_TC)) | HB3_QR;
-            header->hb4 |= HB4_RA;
-            header->hb3 |= HB3_AA;
-            SET_RCODE(header, NOERROR);
-            header->ancount = htons(anscount);
-            header->nscount = htons(0);
-            header->arcount = htons(0);
-            return ansp - (unsigned char *)header;
-          }
-      }
-  }
-#endif
-*/
-
   ans = 0; /* have we answered this question */
-  
+
+#ifdef HAVE_SQLITE
+  /* SQLite Blocking: Check if domain should be blocked */
+  if (qclass == C_IN && (qtype == T_A || qtype == T_AAAA))
+    {
+      if (db_check_block(name))
+        {
+          /* Domain is blocked - return block IP */
+          char *block_ipv4 = db_get_block_ipv4();
+          char *block_ipv6 = db_get_block_ipv6();
+
+          if (qtype == T_A && block_ipv4)
+            {
+              struct in_addr block_addr;
+              if (inet_pton(AF_INET, block_ipv4, &block_addr) == 1)
+                {
+                  log_query(F_FORWARD | F_CONFIG | F_IPV4, name, (union all_addr *)&block_addr, NULL, 0);
+                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                          daemon->local_ttl, NULL, T_A, C_IN, "4", &block_addr))
+                    anscount++;
+                  ans = 1;
+                }
+            }
+          else if (qtype == T_AAAA && block_ipv6)
+            {
+              struct in6_addr block_addr6;
+              if (inet_pton(AF_INET6, block_ipv6, &block_addr6) == 1)
+                {
+                  log_query(F_FORWARD | F_CONFIG | F_IPV6, name, (union all_addr *)&block_addr6, NULL, 0);
+                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                          daemon->local_ttl, NULL, T_AAAA, C_IN, "6", &block_addr6))
+                    anscount++;
+                  ans = 1;
+                }
+            }
+
+          if (ans)
+            goto sqlite_blocked;
+        }
+    }
+#endif
+
   if (qclass == C_IN)
     while (--count != 0 && (crecp = cache_find_by_name(NULL, name, now, F_CNAME | F_NXDOMAIN)))
       {
@@ -2398,6 +2399,9 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
 	  }
       }
   
+#ifdef HAVE_SQLITE
+sqlite_blocked:
+#endif
   /* done all questions, set up header and return length of result */
   /* clear authoritative and truncated flags, set QR flag */
   header->hb3 = (header->hb3 & ~(HB3_AA | HB3_TC)) | HB3_QR;
