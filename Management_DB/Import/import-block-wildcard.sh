@@ -6,7 +6,7 @@
 # Target: IPSetDNSBlock (forward to DNS blocker)
 # Match: Domain AND all subdomains!
 # Usage: ./import-block-wildcard.sh <database> <input-file>
-# Version: 4.1 - Added temp file cleanup trap
+# Version: 4.3 - Added ANALYZE for query optimization
 # ============================================================================
 
 DB_FILE="${1}"
@@ -94,6 +94,10 @@ ELAPSED=$((END_TIME - START_TIME))
 echo ""
 echo "Import completed in ${ELAPSED} seconds"
 echo ""
+
+# OPTIMIZATION v4.3: Run ANALYZE to update query statistics
+echo "Updating query statistics (ANALYZE)..."
+sqlite3 "$DB_FILE" "ANALYZE block_wildcard; PRAGMA optimize;"
 
 CURRENT_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM block_wildcard;")
 echo "Total wildcard domains: $CURRENT_COUNT"

@@ -6,7 +6,7 @@
 # Target: IPSetDNSAllow (forward to real DNS servers)
 # Use case: Whitelist domains that would otherwise be blocked
 # Usage: ./import-fqdn-dns-allow.sh <database> <input-file>
-# Version: 4.1 - Added temp file cleanup trap
+# Version: 4.3 - Added ANALYZE for query optimization
 # ============================================================================
 
 DB_FILE="${1}"
@@ -95,6 +95,10 @@ ELAPSED=$((END_TIME - START_TIME))
 echo ""
 echo "Import completed in ${ELAPSED} seconds"
 echo ""
+
+# OPTIMIZATION v4.3: Run ANALYZE to update query statistics
+echo "Updating query statistics (ANALYZE)..."
+sqlite3 "$DB_FILE" "ANALYZE fqdn_dns_allow; PRAGMA optimize;"
 
 CURRENT_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM fqdn_dns_allow;")
 echo "Total whitelisted domains: $CURRENT_COUNT"

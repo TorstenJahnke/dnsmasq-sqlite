@@ -5,7 +5,7 @@
 # Priority: 1 (HIGHEST)
 # Target: IPSetTerminate (direct blocking)
 # Usage: ./import-block-regex.sh <database> <input-file>
-# Version: 4.1 - Fixed temp table creation bug
+# Version: 4.3 - Added ANALYZE for query optimization
 # ============================================================================
 
 DB_FILE="${1}"
@@ -96,6 +96,10 @@ ELAPSED=$((END_TIME - START_TIME))
 echo ""
 echo "Import completed in ${ELAPSED} seconds"
 echo ""
+
+# OPTIMIZATION v4.3: Run ANALYZE to update query statistics
+echo "Updating query statistics (ANALYZE)..."
+sqlite3 "$DB_FILE" "ANALYZE block_regex; PRAGMA optimize;"
 
 # Show current count
 CURRENT_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM block_regex;")
