@@ -6,7 +6,7 @@
 # Target: IPSetDNSBlock (forward to DNS blocker)
 # Use case: Block entire TLDs or domain patterns
 # Usage: ./import-fqdn-dns-block.sh <database> <input-file>
-# Version: 4.1 - Added temp file cleanup trap
+# Version: 4.3 - Added ANALYZE for query optimization
 # ============================================================================
 
 DB_FILE="${1}"
@@ -95,6 +95,10 @@ ELAPSED=$((END_TIME - START_TIME))
 echo ""
 echo "Import completed in ${ELAPSED} seconds"
 echo ""
+
+# OPTIMIZATION v4.3: Run ANALYZE to update query statistics
+echo "Updating query statistics (ANALYZE)..."
+sqlite3 "$DB_FILE" "ANALYZE fqdn_dns_block; PRAGMA optimize;"
 
 CURRENT_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM fqdn_dns_block;")
 echo "Total blacklisted domains: $CURRENT_COUNT"
