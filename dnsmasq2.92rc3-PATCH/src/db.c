@@ -1085,9 +1085,9 @@ int db_get_block_ips(const char *name,
   /* Use new v4.0 lookup logic */
   int ipset_type = db_lookup_domain(name);
 
-  /* Only IPSET_TYPE_TERMINATE should directly return termination IPs
-   * DNS_BLOCK and DNS_ALLOW are forwarding rules, not blocking rules */
-  if (ipset_type == IPSET_TYPE_TERMINATE)
+  /* IPSET_TYPE_TERMINATE and IPSET_TYPE_DNS_BLOCK should return blocking IPs
+   * DNS_ALLOW is a forwarding rule, not a blocking rule */
+  if (ipset_type == IPSET_TYPE_TERMINATE || ipset_type == IPSET_TYPE_DNS_BLOCK)
   {
     /* Get termination IPs from IPSet configs (not from DB!) */
     struct ipset_config *ipv4_cfg = &daemon->ipset_terminate_v4;
@@ -1109,7 +1109,8 @@ int db_get_block_ips(const char *name,
       *ipv6_out = tls_ipv6_buffer;
     }
 
-    printf("block (v4.0): %s → TERMINATE\n", name);
+    printf("block (v4.0): %s → %s\n", name,
+           ipset_type == IPSET_TYPE_TERMINATE ? "TERMINATE" : "DNS_BLOCK");
     return 1;  /* Blocked */
   }
 
