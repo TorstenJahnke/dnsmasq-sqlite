@@ -115,7 +115,7 @@ int main (int argc, char **argv)
   read_opts(argc, argv, compile_opts);
 
 #ifdef HAVE_SQLITE
-  db_init();
+  db_init();  /* Initialize SQLite database after options are parsed */
 #endif
 
 #ifdef HAVE_LINUX_NETWORK

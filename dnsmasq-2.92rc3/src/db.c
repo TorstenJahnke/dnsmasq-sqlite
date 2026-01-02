@@ -1,11 +1,11 @@
-/* DNSMASQ-SQLITE: Simple DNS blocking with SQLite
+/* DNSMASQ-SQLITE: DNS blocking with SQLite
+ * Based on mabrafoo's original implementation
  *
- * Features:
- * - Exact domain matching (block_exact table)
- * - Wildcard domain matching (block_wildcard_fast table)
- * - Configurable block IPs for IPv4 and IPv6
+ * Tables:
+ * - block_exact: Exact domain matches
+ * - block_wildcard_fast: Wildcard domain matches (checks all suffixes)
  *
- * Config options:
+ * Config:
  *   sqlite-database=/path/to/db.sqlite
  *   sqlite-block-ipv4=1.2.3.4
  *   sqlite-block-ipv6=::1
@@ -15,28 +15,22 @@
 
 #ifdef HAVE_SQLITE
 
-#include <sqlite3.h>
-
-/* Database connection and prepared statements */
 static sqlite3 *db = NULL;
-static sqlite3_stmt *stmt_block_exact = NULL;
-static sqlite3_stmt *stmt_block_wildcard = NULL;
+static sqlite3_stmt *stmt_exact = NULL;
+static sqlite3_stmt *stmt_wildcard = NULL;
 static char *db_file = NULL;
-
-/* Block IPs from config */
 static char *block_ipv4 = NULL;
 static char *block_ipv6 = NULL;
 
-/* Initialize database connection */
 void db_init(void)
 {
   if (!db_file || db)
     return;
 
   atexit(db_cleanup);
-  printf("Opening database %s\n", db_file);
+  printf("Opening SQLite database %s\n", db_file);
 
-  if (sqlite3_open_v2(db_file, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+  if (sqlite3_open(db_file, &db))
   {
     fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
     db = NULL;
@@ -44,46 +38,42 @@ void db_init(void)
   }
 
   /* Prepare exact match statement */
-  if (sqlite3_prepare_v2(db,
-      "SELECT 1 FROM block_exact WHERE Domain = ? LIMIT 1",
-      -1, &stmt_block_exact, NULL) != SQLITE_OK)
+  if (sqlite3_prepare(db,
+      "SELECT 1 FROM block_exact WHERE Domain=? LIMIT 1",
+      -1, &stmt_exact, NULL))
   {
-    fprintf(stderr, "Warning: block_exact table not available\n");
-    stmt_block_exact = NULL;
+    fprintf(stderr, "Warning: block_exact not available: %s\n", sqlite3_errmsg(db));
+    stmt_exact = NULL;
   }
 
   /* Prepare wildcard match statement */
-  if (sqlite3_prepare_v2(db,
-      "SELECT 1 FROM block_wildcard_fast WHERE Domain = ? LIMIT 1",
-      -1, &stmt_block_wildcard, NULL) != SQLITE_OK)
+  if (sqlite3_prepare(db,
+      "SELECT 1 FROM block_wildcard_fast WHERE Domain=? LIMIT 1",
+      -1, &stmt_wildcard, NULL))
   {
-    fprintf(stderr, "Warning: block_wildcard_fast table not available\n");
-    stmt_block_wildcard = NULL;
+    fprintf(stderr, "Warning: block_wildcard_fast not available: %s\n", sqlite3_errmsg(db));
+    stmt_wildcard = NULL;
   }
 
-  printf("SQLite ready: block_exact=%s, block_wildcard=%s\n",
-         stmt_block_exact ? "yes" : "no",
-         stmt_block_wildcard ? "yes" : "no");
-
-  if (block_ipv4)
-    printf("Block IPv4: %s\n", block_ipv4);
-  if (block_ipv6)
-    printf("Block IPv6: %s\n", block_ipv6);
+  printf("SQLite ready: exact=%s, wildcard=%s\n",
+         stmt_exact ? "yes" : "no",
+         stmt_wildcard ? "yes" : "no");
 }
 
-/* Cleanup database connection */
 void db_cleanup(void)
 {
-  if (stmt_block_exact)
+  printf("Cleaning up SQLite database...\n");
+
+  if (stmt_exact)
   {
-    sqlite3_finalize(stmt_block_exact);
-    stmt_block_exact = NULL;
+    sqlite3_finalize(stmt_exact);
+    stmt_exact = NULL;
   }
 
-  if (stmt_block_wildcard)
+  if (stmt_wildcard)
   {
-    sqlite3_finalize(stmt_block_wildcard);
-    stmt_block_wildcard = NULL;
+    sqlite3_finalize(stmt_wildcard);
+    stmt_wildcard = NULL;
   }
 
   if (db)
@@ -111,107 +101,89 @@ void db_cleanup(void)
   }
 }
 
-/* Set database file path */
 void db_set_file(char *path)
 {
   if (db_file)
     free(db_file);
-  db_file = path ? strdup(path) : NULL;
+  db_file = path;
 }
 
-/* Set block IPv4 address */
 void db_set_block_ipv4(char *ip)
 {
   if (block_ipv4)
     free(block_ipv4);
-  block_ipv4 = ip ? strdup(ip) : NULL;
+  block_ipv4 = ip;
 }
 
-/* Set block IPv6 address */
 void db_set_block_ipv6(char *ip)
 {
   if (block_ipv6)
     free(block_ipv6);
-  block_ipv6 = ip ? strdup(ip) : NULL;
+  block_ipv6 = ip;
 }
 
-/* Check if domain matches exactly */
-static int check_exact(const char *domain)
+/* Check if domain should be blocked - returns 1 if blocked */
+int db_check_block(const char *name)
 {
-  if (!stmt_block_exact)
-    return 0;
+  const char *p;
 
-  sqlite3_reset(stmt_block_exact);
+  printf("SQLite: db_check_block called for: %s\n", name ? name : "(null)");
 
-  if (sqlite3_bind_text(stmt_block_exact, 1, domain, -1, SQLITE_STATIC) != SQLITE_OK)
-    return 0;
+  db_init();
 
-  return (sqlite3_step(stmt_block_exact) == SQLITE_ROW) ? 1 : 0;
-}
-
-/* Check if domain matches wildcard (checks all suffixes) */
-static int check_wildcard(const char *domain)
-{
-  if (!stmt_block_wildcard || !domain)
-    return 0;
-
-  const char *p = domain;
-
-  /* Check each suffix: www.example.com -> example.com -> com */
-  while (p && *p)
+  if (!db)
   {
-    sqlite3_reset(stmt_block_wildcard);
+    printf("SQLite: db is NULL, cannot check\n");
+    return 0;
+  }
 
-    if (sqlite3_bind_text(stmt_block_wildcard, 1, p, -1, SQLITE_STATIC) == SQLITE_OK)
+  /* Check exact match first */
+  if (stmt_exact)
+  {
+    sqlite3_reset(stmt_exact);
+    if (sqlite3_bind_text(stmt_exact, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
     {
-      if (sqlite3_step(stmt_block_wildcard) == SQLITE_ROW)
-        return 1;  /* Found match! */
+      if (sqlite3_step(stmt_exact) == SQLITE_ROW)
+      {
+        printf("SQLite: BLOCK exact %s\n", name);
+        return 1;
+      }
     }
+  }
 
-    /* Move to next suffix */
-    p = strchr(p, '.');
-    if (p) p++;  /* Skip the dot */
+  /* Check wildcard - try each suffix */
+  if (stmt_wildcard)
+  {
+    p = name;
+    while (p && *p)
+    {
+      sqlite3_reset(stmt_wildcard);
+      if (sqlite3_bind_text(stmt_wildcard, 1, p, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+      {
+        if (sqlite3_step(stmt_wildcard) == SQLITE_ROW)
+        {
+          printf("SQLite: BLOCK wildcard %s (matched %s)\n", name, p);
+          return 1;
+        }
+      }
+      /* Move to next suffix */
+      p = strchr(p, '.');
+      if (p) p++;
+    }
   }
 
   return 0;
 }
 
-/* Main check function: returns 1 if domain should be blocked */
-int db_check_block(const char *domain)
+/* Get block IPs for a domain */
+char *db_get_block_ipv4(void)
 {
-  db_init();
-
-  if (!db)
-    return 0;  /* No database = don't block */
-
-  /* Check exact match first */
-  if (check_exact(domain))
-    return 1;
-
-  /* Check wildcard match */
-  if (check_wildcard(domain))
-    return 1;
-
-  return 0;  /* Not blocked */
+  return block_ipv4;
 }
 
-/* Get block IPs (returns 1 if should block, fills in IPs) */
-int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out)
+char *db_get_block_ipv6(void)
 {
-  if (ipv4_out) *ipv4_out = NULL;
-  if (ipv6_out) *ipv6_out = NULL;
-
-  if (!db_check_block(domain))
-    return 0;
-
-  /* Domain is blocked - return configured IPs */
-  if (ipv4_out && block_ipv4)
-    *ipv4_out = block_ipv4;
-
-  if (ipv6_out && block_ipv6)
-    *ipv6_out = block_ipv6;
-
-  return 1;
+  return block_ipv6;
 }
 
 #endif /* HAVE_SQLITE */

@@ -185,10 +185,11 @@ RESOLVFILE
 #define HAVE_TFTP
 #define HAVE_SCRIPT
 #define HAVE_AUTH
-#define HAVE_IPSET 
+#define HAVE_IPSET
 #define HAVE_LOOP
 #define HAVE_DUMPFILE
 #define HAVE_SQLITE
+/* NOTE: HAVE_REGEX removed - will be reimplemented with Hyperscan */
 
 /* Build options which require external libraries.
    
@@ -453,6 +454,10 @@ static char *compile_opts =
 "no-"
 #endif
 "nftset "
+#ifndef HAVE_SQLITE
+"no-"
+#endif
+"SQLite "
 #ifndef HAVE_AUTH
 "no-"
 #endif
@@ -475,10 +480,6 @@ static char *compile_opts =
 #ifndef HAVE_DUMPFILE
 "no-"
 #endif
-"dumpfile "
-#ifndef HAVE_SQLITE
-"no-"
-#endif
-"SQLite";
+"dumpfile";
 
 #endif /* defined(DNSMASQ_COMPILE_OPTS) */
