@@ -1,79 +1,65 @@
 #!/bin/sh
-#
-# Import blocklist into SQLite database
-# Supports: plain domain lists, hosts format, adblock format
-#
+# Optimized blocklist import for 660M+ entries
+# Usage: ./import-blocklist.sh /path/to/blacklist.txt [/path/to/output.db]
 
-DB_PATH="${1:-/usr/local/etc/dnsmasq/aviontex.db}"
-BLOCKLIST="$2"
-TABLE="${3:-block_wildcard_fast}"
+TXT="${1:-/opt/blacklist.txt}"
+DB="${2:-/usr/local/etc/dnsmasq/blocklist.db}"
 
-usage() {
-    echo "Usage: $0 <database> <blocklist-file> [table]"
-    echo ""
-    echo "  database       Path to SQLite database"
-    echo "  blocklist-file Text file with domains (one per line)"
-    echo "  table          Target table: block_exact or block_wildcard_fast (default)"
-    echo ""
-    echo "Supported formats:"
-    echo "  - Plain domain list (one domain per line)"
-    echo "  - Hosts file format (0.0.0.0 domain or 127.0.0.1 domain)"
-    echo "  - Comments starting with # are ignored"
-    exit 1
-}
-
-if [ -z "$BLOCKLIST" ]; then
-    usage
-fi
-
-if [ ! -f "$DB_PATH" ]; then
-    echo "ERROR: Database not found: $DB_PATH"
-    echo "Run setup-db.sh first"
+if [ ! -f "$TXT" ]; then
+    echo "Error: $TXT not found"
     exit 1
 fi
 
-if [ ! -f "$BLOCKLIST" ]; then
-    echo "ERROR: Blocklist not found: $BLOCKLIST"
-    exit 1
-fi
+echo "=== SQLite Blocklist Import ==="
+echo "Input:  $TXT"
+echo "Output: $DB"
+echo "Lines:  $(wc -l < "$TXT")"
+echo ""
 
-if [ "$TABLE" != "block_exact" ] && [ "$TABLE" != "block_wildcard_fast" ]; then
-    echo "ERROR: Invalid table. Use 'block_exact' or 'block_wildcard_fast'"
-    exit 1
-fi
+# Remove old database
+rm -f "$DB" "$DB-wal" "$DB-shm"
 
-echo "Importing blocklist into $TABLE..."
-echo "Source: $BLOCKLIST"
-echo "Database: $DB_PATH"
+echo "[1/4] Creating database with optimal settings..."
+sqlite3 "$DB" << 'SQL'
+PRAGMA page_size = 4096;
+PRAGMA journal_mode = OFF;
+PRAGMA synchronous = OFF;
+PRAGMA cache_size = -2097152;
+PRAGMA temp_store = MEMORY;
 
-# Count before
-BEFORE=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM $TABLE;")
+CREATE TABLE block_wildcard_fast (
+    Domain TEXT PRIMARY KEY NOT NULL
+) WITHOUT ROWID;
 
-# Process blocklist and import
-# - Remove comments
-# - Handle hosts format (0.0.0.0 domain or 127.0.0.1 domain)
-# - Remove empty lines
-# - Convert to lowercase
-# - Remove duplicates
-cat "$BLOCKLIST" | \
-    sed 's/#.*$//' | \
-    sed 's/^0\.0\.0\.0[[:space:]]*//' | \
-    sed 's/^127\.0\.0\.1[[:space:]]*//' | \
-    sed 's/[[:space:]]*$//' | \
-    tr '[:upper:]' '[:lower:]' | \
-    grep -v '^$' | \
-    grep -v '^localhost$' | \
-    sort -u | \
-while read domain; do
-    echo "INSERT OR IGNORE INTO $TABLE (Domain) VALUES ('$domain');"
-done | sqlite3 "$DB_PATH"
+CREATE TABLE block_exact (
+    Domain TEXT PRIMARY KEY NOT NULL
+) WITHOUT ROWID;
+SQL
 
-# Count after
-AFTER=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM $TABLE;")
-ADDED=$((AFTER - BEFORE))
+echo "[2/4] Importing domains (this takes a while)..."
+# Fast import using .import
+sqlite3 "$DB" << SQL
+PRAGMA synchronous = OFF;
+PRAGMA journal_mode = OFF;
+PRAGMA cache_size = -2097152;
+.mode csv
+.import '$TXT' block_wildcard_fast
+SQL
+
+echo "[3/4] Optimizing database..."
+sqlite3 "$DB" << 'SQL'
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+ANALYZE;
+VACUUM;
+SQL
+
+echo "[4/4] Verifying..."
+COUNT=$(sqlite3 "$DB" "SELECT COUNT(*) FROM block_wildcard_fast;")
+SIZE=$(ls -lh "$DB" | awk '{print $5}')
 
 echo ""
-echo "Done!"
-echo "  Before: $BEFORE domains"
-echo "  After:  $AFTER domains"
-echo "  Added:  $ADDED new domains"
+echo "=== Done ==="
+echo "Domains: $COUNT"
+echo "DB Size: $SIZE"
+echo "Database: $DB"
