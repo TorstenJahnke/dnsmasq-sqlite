@@ -17,6 +17,7 @@ Dieser Ordner enthält die **gepatchten Quelldateien** von dnsmasq 2.92rc3 mit S
 - `src/dnsmasq.h` - Header mit SQLite-Strukturdefinitionen
 - `src/config.h` - Build-Konfiguration (HAVE_SQLITE, HAVE_REGEX)
 - `src/forward.c` - DNS-Forwarding mit SQLite-Integration
+- `src/option.c` - Config-Option `sqlite-database=` hinzugefügt
 - `Makefile` - Build-System mit SQLite/PCRE2 Support
 
 **Dokumentation:**
@@ -98,8 +99,12 @@ sudo make install
 
 ### **Datenbank-Pfad setzen (PFLICHT!):**
 
-Die Datenbank wird über Umgebungsvariable konfiguriert:
+In `/usr/local/etc/dnsmasq.conf`:
+```conf
+sqlite-database=/usr/local/etc/dnsmasq/aviontex.db
+```
 
+Alternativ über Umgebungsvariable (falls config-Option nicht funktioniert):
 ```bash
 # Linux/Bash:
 export DNSMASQ_SQLITE_DB=/usr/local/etc/dnsmasq/aviontex.db
@@ -107,8 +112,6 @@ export DNSMASQ_SQLITE_DB=/usr/local/etc/dnsmasq/aviontex.db
 # FreeBSD/csh:
 setenv DNSMASQ_SQLITE_DB /usr/local/etc/dnsmasq/aviontex.db
 ```
-
-Für permanente Konfiguration in `/etc/rc.conf` (FreeBSD) oder Systemd-Service eintragen.
 
 ### **SQLite PRAGMAs (bereits in db.c enthalten):**
 ```c
