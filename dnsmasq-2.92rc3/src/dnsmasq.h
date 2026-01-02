@@ -1954,4 +1954,16 @@ int add_update_server(int flags,
 		      union mysockaddr *source_addr,
 		      const char *interface,
 		      const char *domain,
-		      union all_addr *local_addr); 
+		      union all_addr *local_addr);
+
+/* db.c - SQLite blocking */
+#ifdef HAVE_SQLITE
+#include <sqlite3.h>
+void db_init(void);
+void db_cleanup(void);
+void db_set_file(char *path);
+void db_set_block_ipv4(char *ip);
+void db_set_block_ipv6(char *ip);
+int db_check_block(const char *domain);
+int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
+#endif 

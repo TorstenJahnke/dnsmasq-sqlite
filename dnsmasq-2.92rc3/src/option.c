@@ -197,6 +197,9 @@ struct myoption {
 #define LOPT_DO_ENCODE     388
 #define LOPT_LEASEQUERY    389
 #define LOPT_SPLIT_RELAY   390
+#define LOPT_SQLITE_DB     391
+#define LOPT_SQLITE_IPV4   392
+#define LOPT_SQLITE_IPV6   393
 
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -398,6 +401,9 @@ static const struct myoption opts[] =
     { "no-ident", 0, 0, LOPT_NO_IDENT },
     { "max-tcp-connections", 1, 0, LOPT_MAX_PROCS },
     { "leasequery", 2, 0, LOPT_LEASEQUERY },
+    { "sqlite-database", 1, 0, LOPT_SQLITE_DB },
+    { "sqlite-block-ipv4", 1, 0, LOPT_SQLITE_IPV4 },
+    { "sqlite-block-ipv6", 1, 0, LOPT_SQLITE_IPV6 },
     { NULL, 0, 0, 0 }
   };
 
@@ -504,6 +510,9 @@ static struct {
   { LOPT_BRIDGE, ARG_DUP, "<iface>,<alias>..", gettext_noop("Treat DHCP requests on aliases as arriving from interface."), NULL },
   { LOPT_SHARED_NET, ARG_DUP, "<iface>|<addr>,<addr>", gettext_noop("Specify extra networks sharing a broadcast domain for DHCP"), NULL},
   { LOPT_LEASEQUERY, ARG_DUP, "[<addr>[/prefix>]]", gettext_noop("Enable RFC 4388 leasequery functions for DHCPv4"), NULL },
+  { LOPT_SQLITE_DB, ARG_ONE, "<path>", gettext_noop("SQLite database file for DNS blocking."), NULL },
+  { LOPT_SQLITE_IPV4, ARG_ONE, "<ipaddr>", gettext_noop("IPv4 address to return for blocked domains."), NULL },
+  { LOPT_SQLITE_IPV6, ARG_ONE, "<ipaddr>", gettext_noop("IPv6 address to return for blocked domains."), NULL },
   { '5', OPT_NO_PING, NULL, gettext_noop("Disable ICMP echo address checking in the DHCP server."), NULL },
   { '6', ARG_ONE, "<path>", gettext_noop("Shell script to run on DHCP lease creation and destruction."), NULL },
   { LOPT_LUASCRIPT, ARG_DUP, "path", gettext_noop("Lua script to run on DHCP lease creation and destruction."), NULL },
@@ -5448,6 +5457,20 @@ err:
 	daemon->max_procs = max_procs;
 	break;
       }
+
+#ifdef HAVE_SQLITE
+    case LOPT_SQLITE_DB: /* --sqlite-database */
+      db_set_file(arg);
+      break;
+
+    case LOPT_SQLITE_IPV4: /* --sqlite-block-ipv4 */
+      db_set_block_ipv4(arg);
+      break;
+
+    case LOPT_SQLITE_IPV6: /* --sqlite-block-ipv6 */
+      db_set_block_ipv6(arg);
+      break;
+#endif
 
     default:
       ret_err(_("unsupported option (check that dnsmasq was compiled with DHCP/TFTP/DNSSEC/DBus support)"));
