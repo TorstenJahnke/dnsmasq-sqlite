@@ -111,15 +111,6 @@ sqlite-block-ipv4=0.0.0.0
 sqlite-block-ipv6=::
 ```
 
-Alternativ über Umgebungsvariable (falls config-Option nicht funktioniert):
-```bash
-# Linux/Bash:
-export DNSMASQ_SQLITE_DB=/usr/local/etc/dnsmasq/aviontex.db
-
-# FreeBSD/csh:
-setenv DNSMASQ_SQLITE_DB /usr/local/etc/dnsmasq/aviontex.db
-```
-
 ### **SQLite PRAGMAs (bereits in db.c enthalten):**
 ```c
 PRAGMA mmap_size = 0;                    // Für große DBs (>100GB)
