@@ -1230,34 +1230,7 @@ step3:
     }
   }
 
-  printf("DEBUG: step4 - checking fqdn_dns_allow\n");
-  fflush(stdout);
-
-  /* Step 4: Check fqdn_dns_allow
-   * PERFORMANCE v4.2: Suffix-based IN queries */
-  if (db_conn)
-  {
-    if (suffix_wildcard_query_match(db_conn, "fqdn_dns_allow", name,
-                                     matched_domain_buf, sizeof(matched_domain_buf)))
-    {
-      printf("db_lookup: %s matched fqdn_dns_allow '%s' -> DNS_ALLOW\n", name, matched_domain_buf);
-      result = IPSET_TYPE_DNS_ALLOW;
-      goto cache_and_return;
-    }
-  }
-
-  /* Step 5: Check fqdn_dns_block
-   * PERFORMANCE v4.2: Suffix-based IN queries */
-  if (db_conn)
-  {
-    if (suffix_wildcard_query_match(db_conn, "fqdn_dns_block", name,
-                                     matched_domain_buf, sizeof(matched_domain_buf)))
-    {
-      printf("db_lookup: %s matched fqdn_dns_block '%s' -> DNS_BLOCK\n", name, matched_domain_buf);
-      result = IPSET_TYPE_DNS_BLOCK;
-      goto cache_and_return;
-    }
-  }
+  /* NOTE: fqdn_dns_allow/fqdn_dns_block disabled - re-enable when populated */
 
   /* No match → use default forward DNS */
   result = IPSET_TYPE_NONE;
