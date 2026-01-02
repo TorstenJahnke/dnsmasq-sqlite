@@ -68,6 +68,7 @@
 typedef struct {
   sqlite3 *conn;                    /* SQLite connection handle */
   sqlite3_stmt *block_exact;        /* Prepared: block_exact lookup */
+  sqlite3_stmt *block_wildcard_fast; /* Prepared: FAST wildcard lookup */
   sqlite3_stmt *domain_alias;       /* Prepared: domain_alias lookup */
   /* NOTE v4.2: block_wildcard, fqdn_dns_allow, fqdn_dns_block removed!
    * These now use dynamic suffix-based IN queries (suffix_wildcard_query_match)
@@ -87,6 +88,7 @@ static pthread_mutex_t db_pool_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Legacy global connection (kept for initialization and compatibility) */
 static sqlite3 *db = NULL;
 static sqlite3_stmt *db_block_exact = NULL;      /* For exact matching → IPSetTerminate */
+static sqlite3_stmt *db_block_wildcard_fast = NULL; /* FAST: For wildcard matching */
 static sqlite3_stmt *db_domain_alias = NULL;     /* For domain aliasing (domain → domain) */
 /* NOTE v4.2: db_block_wildcard, db_fqdn_dns_allow, db_fqdn_dns_block removed!
  * These now use dynamic suffix-based IN queries (suffix_wildcard_query_match)
@@ -251,6 +253,38 @@ static int suffix_wildcard_query_match(sqlite3 *conn, const char *table,
   sqlite3_finalize(stmt);
 
   return found;
+}
+
+/* FAST wildcard check using pre-prepared statement
+ * Much faster than suffix_wildcard_query_match because:
+ * 1. Uses sqlite3_reset() instead of sqlite3_prepare_v2()
+ * 2. Simple loop through suffixes instead of dynamic IN clause
+ * Returns: 1 if blocked, 0 if not */
+static int fast_wildcard_check(sqlite3_stmt *stmt, const char *domain)
+{
+  if (!stmt || !domain)
+    return 0;
+
+  /* Extract all domain suffixes */
+  const char *suffixes[MAX_DOMAIN_LEVELS];
+  int suffix_count = domain_get_suffixes(domain, suffixes, MAX_DOMAIN_LEVELS);
+
+  /* Check each suffix with pre-prepared statement */
+  for (int i = 0; i < suffix_count; i++)
+  {
+    sqlite3_reset(stmt);
+    if (sqlite3_bind_text(stmt, 1, suffixes[i], -1, SQLITE_STATIC) != SQLITE_OK)
+      continue;
+
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+      /* Found a match! */
+      printf("FAST: %s matched wildcard '%s'\n", domain, suffixes[i]);
+      return 1;
+    }
+  }
+
+  return 0;
 }
 
 /* ==============================================================================
@@ -550,6 +584,12 @@ static void db_init_internal(void)
     exit(1);
   }
 
+  /* FAST block_wildcard lookup - uses indexed table, NOT view! */
+  if (sqlite3_prepare(db, "SELECT 1 FROM block_wildcard_fast WHERE Domain = ? LIMIT 1", -1, &db_block_wildcard_fast, NULL) != SQLITE_OK) {
+    fprintf(stderr, "WARNING: Failed to prepare block_wildcard_fast: %s\n", sqlite3_errmsg(db));
+    db_block_wildcard_fast = NULL;
+  }
+
   /* Domain Aliasing: Redirect domain queries */
   if (sqlite3_prepare(db, "SELECT Target_Domain FROM domain_alias WHERE Source_Domain = ?", -1, &db_domain_alias, NULL) != SQLITE_OK) {
     fprintf(stderr, "WARNING: Failed to prepare domain_alias (optional table): %s\n", sqlite3_errmsg(db));
@@ -612,8 +652,11 @@ void db_cleanup(void)
     db_block_exact = NULL;
   }
 
-  /* NOTE v4.2: db_block_wildcard, db_fqdn_dns_allow, db_fqdn_dns_block
-   * no longer exist as pre-prepared statements - removed for suffix-based queries */
+  if (db_block_wildcard_fast)
+  {
+    sqlite3_finalize(db_block_wildcard_fast);
+    db_block_wildcard_fast = NULL;
+  }
 
   if (db_domain_alias)
   {
@@ -1212,17 +1255,11 @@ int db_lookup_domain(const char *name)
   }
 
 step3:
-  printf("DEBUG: step3 - checking block_wildcard\n");
-  fflush(stdout);
-
-  /* Step 3: Check block_wildcard_fast (materialized table with index)
-   * NOTE: Using _fast table instead of VIEW for performance */
-  if (db_conn)
+  /* Step 3: FAST wildcard check using pre-prepared statement */
+  if (db_block_wildcard_fast)
   {
-    if (suffix_wildcard_query_match(db_conn, "block_wildcard_fast", name,
-                                     matched_domain_buf, sizeof(matched_domain_buf)))
+    if (fast_wildcard_check(db_block_wildcard_fast, name))
     {
-      printf("db_lookup: %s matched block_wildcard '%s' -> DNS_BLOCK\n", name, matched_domain_buf);
       result = IPSET_TYPE_DNS_BLOCK;
       goto cache_and_return;
     }
