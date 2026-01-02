@@ -1,0 +1,24 @@
+# dnsmasq SQLite blocking configuration example
+#
+# Copy relevant parts to /usr/local/etc/dnsmasq.conf
+
+# SQLite database path
+sqlite-database=/usr/local/etc/dnsmasq/aviontex.db
+
+# Block IPs - returned for blocked domains
+sqlite-block-ipv4=178.162.228.81
+sqlite-block-ipv6=2a00:c98:4002:2:8::81
+
+# Basic dnsmasq settings
+no-resolv
+server=8.8.8.8
+server=8.8.4.4
+server=2001:4860:4860::8888
+server=2001:4860:4860::8844
+
+# Logging (optional)
+log-queries
+log-facility=/var/log/dnsmasq.log
+
+# Cache settings
+cache-size=10000
