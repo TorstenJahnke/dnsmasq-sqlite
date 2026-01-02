@@ -2,8 +2,8 @@
  * Based on mabrafoo's original implementation
  *
  * Tables:
- * - block_exact: Exact domain matches
- * - block_wildcard_fast: Wildcard domain matches (checks all suffixes)
+ * - block_exact: Exact domain matches (needs INDEX on Domain)
+ * - block_wildcard_fast: Wildcard domain matches (needs INDEX on Domain)
  *
  * Config:
  *   sqlite-database=/path/to/db.sqlite
@@ -28,46 +28,46 @@ void db_init(void)
     return;
 
   atexit(db_cleanup);
-  printf("Opening SQLite database %s\n", db_file);
 
-  /* Open database read-only to avoid locking issues */
-  int flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX;
+  /* Open database read-only for safety and performance */
+  int flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX;
   if (sqlite3_open_v2(db_file, &db, flags, NULL))
   {
-    fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
+    my_syslog(LOG_ERR, _("SQLite: Can't open database %s: %s"), db_file, sqlite3_errmsg(db));
     db = NULL;
     return;
   }
 
-  printf("SQLite: database opened read-only\n");
+  /* Performance optimizations */
+  sqlite3_exec(db, "PRAGMA cache_size = -65536", NULL, NULL, NULL);  /* 64MB cache */
+  sqlite3_exec(db, "PRAGMA mmap_size = 268435456", NULL, NULL, NULL); /* 256MB mmap */
 
   /* Prepare exact match statement */
-  if (sqlite3_prepare(db,
+  if (sqlite3_prepare_v2(db,
       "SELECT 1 FROM block_exact WHERE Domain=? LIMIT 1",
       -1, &stmt_exact, NULL))
   {
-    fprintf(stderr, "Warning: block_exact not available: %s\n", sqlite3_errmsg(db));
+    my_syslog(LOG_WARNING, _("SQLite: block_exact table not available"));
     stmt_exact = NULL;
   }
 
   /* Prepare wildcard match statement */
-  if (sqlite3_prepare(db,
+  if (sqlite3_prepare_v2(db,
       "SELECT 1 FROM block_wildcard_fast WHERE Domain=? LIMIT 1",
       -1, &stmt_wildcard, NULL))
   {
-    fprintf(stderr, "Warning: block_wildcard_fast not available: %s\n", sqlite3_errmsg(db));
+    my_syslog(LOG_WARNING, _("SQLite: block_wildcard_fast table not available"));
     stmt_wildcard = NULL;
   }
 
-  printf("SQLite ready: exact=%s, wildcard=%s\n",
-         stmt_exact ? "yes" : "no",
-         stmt_wildcard ? "yes" : "no");
+  my_syslog(LOG_INFO, _("SQLite: database %s opened (exact=%s, wildcard=%s)"),
+            db_file,
+            stmt_exact ? "yes" : "no",
+            stmt_wildcard ? "yes" : "no");
 }
 
 void db_cleanup(void)
 {
-  printf("Cleaning up SQLite database...\n");
-
   if (stmt_exact)
   {
     sqlite3_finalize(stmt_exact);
@@ -131,28 +131,18 @@ int db_check_block(const char *name)
 {
   const char *p;
 
-  printf("SQLite: db_check_block called for: %s\n", name ? name : "(null)");
-
   db_init();
 
   if (!db)
-  {
-    printf("SQLite: db is NULL, cannot check\n");
     return 0;
-  }
 
   /* Check exact match first */
   if (stmt_exact)
   {
     sqlite3_reset(stmt_exact);
-    if (sqlite3_bind_text(stmt_exact, 1, name, -1, SQLITE_TRANSIENT) == SQLITE_OK)
-    {
-      if (sqlite3_step(stmt_exact) == SQLITE_ROW)
-      {
-        printf("SQLite: BLOCK exact %s\n", name);
-        return 1;
-      }
-    }
+    sqlite3_bind_text(stmt_exact, 1, name, -1, SQLITE_STATIC);
+    if (sqlite3_step(stmt_exact) == SQLITE_ROW)
+      return 1;
   }
 
   /* Check wildcard - try each suffix */
@@ -161,38 +151,21 @@ int db_check_block(const char *name)
     p = name;
     while (p && *p)
     {
-      printf("SQLite: checking wildcard suffix: '%s'\n", p);
       sqlite3_reset(stmt_wildcard);
-      int bind_rc = sqlite3_bind_text(stmt_wildcard, 1, p, -1, SQLITE_TRANSIENT);
-      printf("SQLite: bind result: %d\n", bind_rc);
-      if (bind_rc == SQLITE_OK)
-      {
-        int step_rc = sqlite3_step(stmt_wildcard);
-        printf("SQLite: step result: %d (SQLITE_ROW=%d, SQLITE_DONE=%d)\n", step_rc, SQLITE_ROW, SQLITE_DONE);
-        if (step_rc != SQLITE_ROW && step_rc != SQLITE_DONE)
-        {
-          printf("SQLite ERROR: %s\n", sqlite3_errmsg(db));
-        }
-        if (step_rc == SQLITE_ROW)
-        {
-          printf("SQLite: BLOCK wildcard %s (matched %s)\n", name, p);
-          return 1;
-        }
-      }
+      sqlite3_bind_text(stmt_wildcard, 1, p, -1, SQLITE_STATIC);
+      if (sqlite3_step(stmt_wildcard) == SQLITE_ROW)
+        return 1;
+
       /* Move to next suffix */
       p = strchr(p, '.');
       if (p) p++;
     }
   }
-  else
-  {
-    printf("SQLite: stmt_wildcard is NULL!\n");
-  }
 
   return 0;
 }
 
-/* Get block IPs for a domain */
+/* Get block IPs */
 char *db_get_block_ipv4(void)
 {
   return block_ipv4;
