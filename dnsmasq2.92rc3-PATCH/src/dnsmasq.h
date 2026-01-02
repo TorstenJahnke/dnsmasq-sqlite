@@ -662,6 +662,11 @@ struct allowlist {
   struct allowlist *next;
 };
 
+struct ipset_config {
+  union mysockaddr servers[3];  /* Up to 3 servers/IPs */
+  int count;                     /* Number of configured entries */
+};
+
 struct irec {
   union mysockaddr addr;
   struct in_addr netmask; /* only valid for IPv4 */
@@ -1200,6 +1205,10 @@ extern struct daemon {
   int server_has_wildcard;
   int serverarraysz, serverarrayhwm;
   struct ipsets *ipsets, *nftsets;
+  struct ipset_config ipset_terminate_v4;
+  struct ipset_config ipset_terminate_v6;
+  struct ipset_config ipset_dns_block;
+  struct ipset_config ipset_dns_allow;
   u32 allowlist_mask;
   struct allowlist *allowlists;
   int log_fac; /* log facility */
