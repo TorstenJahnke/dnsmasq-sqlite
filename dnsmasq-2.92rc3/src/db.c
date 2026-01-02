@@ -127,40 +127,53 @@ void db_set_block_ipv6(char *ip)
   block_ipv6 = ip;
 }
 
+/* Extract base domain (last 2 parts): a.b.c.info.com -> info.com */
+static const char *get_base_domain(const char *name)
+{
+  const char *p, *last_dot = NULL, *second_last_dot = NULL;
+
+  for (p = name; *p; p++)
+  {
+    if (*p == '.')
+    {
+      second_last_dot = last_dot;
+      last_dot = p;
+    }
+  }
+
+  /* Return pointer after second-to-last dot, or original name */
+  return second_last_dot ? second_last_dot + 1 : name;
+}
+
 /* Check if domain should be blocked - returns 1 if blocked */
 int db_check_block(const char *name)
 {
-  const char *p;
+  const char *base;
 
   db_init();
 
   if (!db)
     return 0;
 
-  /* Check exact match first */
+  /* Get base domain (e.g., info.com from a.b.c.info.com) */
+  base = get_base_domain(name);
+
+  /* Check wildcard first (base domain) */
+  if (stmt_wildcard)
+  {
+    sqlite3_reset(stmt_wildcard);
+    sqlite3_bind_text(stmt_wildcard, 1, base, -1, SQLITE_STATIC);
+    if (sqlite3_step(stmt_wildcard) == SQLITE_ROW)
+      return 1;
+  }
+
+  /* Check exact match (full domain) */
   if (stmt_exact)
   {
     sqlite3_reset(stmt_exact);
     sqlite3_bind_text(stmt_exact, 1, name, -1, SQLITE_STATIC);
     if (sqlite3_step(stmt_exact) == SQLITE_ROW)
       return 1;
-  }
-
-  /* Check wildcard - try each suffix */
-  if (stmt_wildcard)
-  {
-    p = name;
-    while (p && *p)
-    {
-      sqlite3_reset(stmt_wildcard);
-      sqlite3_bind_text(stmt_wildcard, 1, p, -1, SQLITE_STATIC);
-      if (sqlite3_step(stmt_wildcard) == SQLITE_ROW)
-        return 1;
-
-      /* Move to next suffix */
-      p = strchr(p, '.');
-      if (p) p++;
-    }
   }
 
   return 0;
