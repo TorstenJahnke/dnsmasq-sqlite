@@ -1,5 +1,5 @@
 #!/bin/sh
-# Optimized blocklist import for 660M+ entries
+# Optimized blocklist import for 300M+ entries (v5.0)
 # Usage: ./import-blocklist.sh /path/to/blacklist.txt [/path/to/output.db]
 
 TXT="${1:-/opt/blacklist.txt}"
@@ -10,7 +10,7 @@ if [ ! -f "$TXT" ]; then
     exit 1
 fi
 
-echo "=== SQLite Blocklist Import ==="
+echo "=== SQLite Blocklist Import v5.0 ==="
 echo "Input:  $TXT"
 echo "Output: $DB"
 echo "Lines:  $(wc -l < "$TXT")"
@@ -27,12 +27,20 @@ PRAGMA synchronous = OFF;
 PRAGMA cache_size = -2097152;
 PRAGMA temp_store = MEMORY;
 
-CREATE TABLE block_wildcard_fast (
+-- block_wildcard: Base domain blocks all subdomains
+CREATE TABLE block_wildcard (
     Domain TEXT PRIMARY KEY NOT NULL
 ) WITHOUT ROWID;
 
-CREATE TABLE block_exact (
+-- block_hosts: Exact hostname match only
+CREATE TABLE block_hosts (
     Domain TEXT PRIMARY KEY NOT NULL
+) WITHOUT ROWID;
+
+-- block_ips: IP address rewriting
+CREATE TABLE block_ips (
+    Source_IP TEXT PRIMARY KEY NOT NULL,
+    Target_IP TEXT NOT NULL
 ) WITHOUT ROWID;
 SQL
 
@@ -43,7 +51,7 @@ PRAGMA synchronous = OFF;
 PRAGMA journal_mode = OFF;
 PRAGMA cache_size = -2097152;
 .mode csv
-.import '$TXT' block_wildcard_fast
+.import '$TXT' block_wildcard
 SQL
 
 echo "[3/4] Optimizing database..."
@@ -55,7 +63,7 @@ VACUUM;
 SQL
 
 echo "[4/4] Verifying..."
-COUNT=$(sqlite3 "$DB" "SELECT COUNT(*) FROM block_wildcard_fast;")
+COUNT=$(sqlite3 "$DB" "SELECT COUNT(*) FROM block_wildcard;")
 SIZE=$(ls -lh "$DB" | awk '{print $5}')
 
 echo ""
