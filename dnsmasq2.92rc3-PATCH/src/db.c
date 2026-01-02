@@ -74,7 +74,7 @@ typedef struct {
   sqlite3_stmt *block_exact;        /* Prepared: block_exact lookup */
   sqlite3_stmt *domain_alias;       /* Prepared: domain_alias lookup */
   /* NOTE v4.2: block_wildcard, fqdn_dns_allow, fqdn_dns_block removed!
-   * These now use dynamic suffix-based IN queries (see suffix_wildcard_query)
+   * These now use dynamic suffix-based IN queries (suffix_wildcard_query_match)
    * for 100-1000x better performance on large tables */
   sqlite3_stmt *ip_rewrite_v4;      /* Prepared: ip_rewrite_v4 lookup */
   sqlite3_stmt *ip_rewrite_v6;      /* Prepared: ip_rewrite_v6 lookup */
@@ -94,7 +94,7 @@ static sqlite3_stmt *db_block_regex = NULL;      /* For regex pattern matching �
 static sqlite3_stmt *db_block_exact = NULL;      /* For exact matching → IPSetTerminate */
 static sqlite3_stmt *db_domain_alias = NULL;     /* For domain aliasing (domain → domain) */
 /* NOTE v4.2: db_block_wildcard, db_fqdn_dns_allow, db_fqdn_dns_block removed!
- * These now use dynamic suffix-based IN queries (see suffix_wildcard_query)
+ * These now use dynamic suffix-based IN queries (suffix_wildcard_query_match)
  * for 100-1000x better performance on large tables */
 static sqlite3_stmt *db_ip_rewrite_v4 = NULL;    /* For IPv4 IP rewriting (source → target) */
 static sqlite3_stmt *db_ip_rewrite_v6 = NULL;    /* For IPv6 IP rewriting (source → target) */
@@ -190,57 +190,8 @@ static int domain_get_suffixes(const char *domain, const char **suffixes, int ma
  */
 static __thread char tls_suffix_sql[2048];  /* Buffer for dynamic SQL */
 
-static int suffix_wildcard_query(sqlite3 *conn, const char *table, const char *domain)
-{
-  if (!conn || !table || !domain)
-    return 0;
-
-  /* Extract all domain suffixes */
-  const char *suffixes[MAX_DOMAIN_LEVELS];
-  int suffix_count = domain_get_suffixes(domain, suffixes, MAX_DOMAIN_LEVELS);
-
-  if (suffix_count == 0)
-    return 0;
-
-  /* Build SQL: SELECT Domain FROM <table> WHERE Domain IN (?, ?, ...) ORDER BY length(Domain) DESC LIMIT 1
-   * SECURITY: Table name is NOT user input, it's a compile-time constant from our code */
-  int sql_len = snprintf(tls_suffix_sql, sizeof(tls_suffix_sql),
-    "SELECT Domain FROM %s WHERE Domain IN (?", table);
-
-  for (int i = 1; i < suffix_count && sql_len < (int)sizeof(tls_suffix_sql) - 50; i++)
-    sql_len += snprintf(tls_suffix_sql + sql_len, sizeof(tls_suffix_sql) - sql_len, ",?");
-
-  snprintf(tls_suffix_sql + sql_len, sizeof(tls_suffix_sql) - sql_len,
-    ") ORDER BY length(Domain) DESC LIMIT 1");
-
-  /* Prepare statement */
-  sqlite3_stmt *stmt = NULL;
-  if (sqlite3_prepare_v2(conn, tls_suffix_sql, -1, &stmt, NULL) != SQLITE_OK)
-  {
-    return 0;
-  }
-
-  /* Bind all suffixes */
-  for (int i = 0; i < suffix_count; i++)
-  {
-    if (sqlite3_bind_text(stmt, i + 1, suffixes[i], -1, SQLITE_STATIC) != SQLITE_OK)
-    {
-      sqlite3_finalize(stmt);
-      return 0;
-    }
-  }
-
-  /* Execute query */
-  int found = (sqlite3_step(stmt) == SQLITE_ROW);
-
-  /* Cleanup */
-  sqlite3_finalize(stmt);
-
-  return found;
-}
-
 /* Execute a suffix-based wildcard query and return the matched domain
- * Same as suffix_wildcard_query but returns the matched domain name
+ * Uses dynamic IN query for O(log n) performance instead of O(n) LIKE queries
  *
  * @param conn          SQLite connection to use
  * @param table         Table name (block_wildcard, fqdn_dns_allow, fqdn_dns_block)
@@ -719,8 +670,8 @@ static void db_init_internal(void)
    * NEW (FAST - Index Scan O(log n) per suffix):
    *   WHERE Domain IN (?, ?, ?, ...) using all domain suffixes
    *
-   * Dynamic queries are built at runtime by suffix_wildcard_query()
-   * See: suffix_wildcard_query(), suffix_wildcard_query_match()
+   * Dynamic queries are built at runtime by suffix_wildcard_query_match()
+   * See: suffix_wildcard_query_match() for implementation details
    * Performance: 100-1000x faster for tables with 1M+ domains
    */
 
@@ -878,7 +829,7 @@ static int db_prepare_pool_statements(db_connection_t *conn)
 
   /* NOTE v4.2: block_wildcard, fqdn_dns_allow, fqdn_dns_block no longer
    * use pre-prepared statements! These use dynamic suffix-based IN queries
-   * via suffix_wildcard_query() for 100-1000x better performance */
+   * via suffix_wildcard_query_match() for 100-1000x better performance */
 
   return 0;
 }
