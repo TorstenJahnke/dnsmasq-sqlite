@@ -96,6 +96,20 @@ sudo make install
 
 ## 🔧 KONFIGURATION
 
+### **Datenbank-Pfad setzen (PFLICHT!):**
+
+Die Datenbank wird über Umgebungsvariable konfiguriert:
+
+```bash
+# Linux/Bash:
+export DNSMASQ_SQLITE_DB=/usr/local/etc/dnsmasq/aviontex.db
+
+# FreeBSD/csh:
+setenv DNSMASQ_SQLITE_DB /usr/local/etc/dnsmasq/aviontex.db
+```
+
+Für permanente Konfiguration in `/etc/rc.conf` (FreeBSD) oder Systemd-Service eintragen.
+
 ### **SQLite PRAGMAs (bereits in db.c enthalten):**
 ```c
 PRAGMA mmap_size = 0;                    // Für große DBs (>100GB)
