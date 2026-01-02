@@ -30,12 +30,16 @@ void db_init(void)
   atexit(db_cleanup);
   printf("Opening SQLite database %s\n", db_file);
 
-  if (sqlite3_open(db_file, &db))
+  /* Open database read-only to avoid locking issues */
+  int flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX;
+  if (sqlite3_open_v2(db_file, &db, flags, NULL))
   {
     fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
     db = NULL;
     return;
   }
+
+  printf("SQLite: database opened read-only\n");
 
   /* Prepare exact match statement */
   if (sqlite3_prepare(db,

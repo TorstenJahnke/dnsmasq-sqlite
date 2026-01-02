@@ -114,9 +114,9 @@ int main (int argc, char **argv)
   
   read_opts(argc, argv, compile_opts);
 
-#ifdef HAVE_SQLITE
-  db_init();  /* Initialize SQLite database after options are parsed */
-#endif
+  /* SQLite: db_init() is called lazily on first query in db_check_block()
+     This is necessary because dnsmasq forks and SQLite connections
+     are not fork-safe */
 
 #ifdef HAVE_LINUX_NETWORK
   daemon->kernel_version = kernel_version();
