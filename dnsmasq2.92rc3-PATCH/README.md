@@ -14,8 +14,9 @@ Dieser Ordner enthält die **gepatchten Quelldateien** von dnsmasq 2.92rc3 mit S
 
 **Source Code:**
 - `src/db.c` - SQLite-Integration mit allen Fixes (v4.3)
+- `src/dnsmasq.c` - db_init() Aufruf hinzugefügt
 - `src/dnsmasq.h` - Header mit SQLite-Strukturdefinitionen
-- `src/config.h` - Build-Konfiguration (HAVE_SQLITE, HAVE_REGEX)
+- `src/config.h` - Build-Konfiguration (HAVE_SQLITE, HAVE_REGEX), compile_opts
 - `src/forward.c` - DNS-Forwarding mit SQLite-Integration
 - `src/option.c` - Config-Option `sqlite-database=` hinzugefügt
 - `Makefile` - Build-System mit SQLite/PCRE2 Support
