@@ -524,8 +524,16 @@ static void db_init_internal(void);
 
 void db_init(void)
 {
-  if (!db_file)
-    return;
+  /* If db_file not set via db_set_file(), check environment variable */
+  if (!db_file) {
+    char *env_db = getenv("DNSMASQ_SQLITE_DB");
+    if (env_db && *env_db) {
+      db_file = strdup(env_db);
+      printf("Using SQLite database from DNSMASQ_SQLITE_DB: %s\n", db_file);
+    } else {
+      return;  /* No database configured */
+    }
+  }
 
   /* CRITICAL FIX: Ensure db_init_internal() is called exactly once
    * Previous code had race condition - multiple threads could initialize simultaneously */
