@@ -1661,11 +1661,51 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
   if (!extract_name(header, qlen, &p, name, EXTR_NAME_EXTRACT, 4))
     return 0; /* bad packet */
   
-  GETSHORT(qtype, p); 
+  GETSHORT(qtype, p);
   GETSHORT(qclass, p);
-  
+
   ans = 0; /* have we answered this question */
-  
+
+#ifdef HAVE_SQLITE
+  /* SQLite Blocking: Check if domain should be blocked */
+  if (qclass == C_IN && (qtype == T_A || qtype == T_AAAA))
+    {
+      char *block_ipv4 = NULL;
+      char *block_ipv6 = NULL;
+      if (db_get_block_ips(name, &block_ipv4, &block_ipv6))
+        {
+          /* Domain is blocked - return block IP */
+          if (qtype == T_A && block_ipv4)
+            {
+              struct in_addr block_addr;
+              if (inet_pton(AF_INET, block_ipv4, &block_addr) == 1)
+                {
+                  log_query(F_FORWARD | F_CONFIG | F_IPV4, name, (union all_addr *)&block_addr, NULL, 0);
+                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                          daemon->local_ttl, NULL, T_A, C_IN, "4", &block_addr))
+                    anscount++;
+                  ans = 1;
+                }
+            }
+          else if (qtype == T_AAAA && block_ipv6)
+            {
+              struct in6_addr block_addr6;
+              if (inet_pton(AF_INET6, block_ipv6, &block_addr6) == 1)
+                {
+                  log_query(F_FORWARD | F_CONFIG | F_IPV6, name, (union all_addr *)&block_addr6, NULL, 0);
+                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                          daemon->local_ttl, NULL, T_AAAA, C_IN, "6", &block_addr6))
+                    anscount++;
+                  ans = 1;
+                }
+            }
+
+          if (ans)
+            goto sqlite_blocked;
+        }
+    }
+#endif
+
   if (qclass == C_IN)
     while (--count != 0 && (crecp = cache_find_by_name(NULL, name, now, F_CNAME | F_NXDOMAIN)))
       {
@@ -2358,6 +2398,9 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
 	  }
       }
   
+#ifdef HAVE_SQLITE
+sqlite_blocked:
+#endif
   /* done all questions, set up header and return length of result */
   /* clear authoritative and truncated flags, set QR flag */
   header->hb3 = (header->hb3 & ~(HB3_AA | HB3_TC)) | HB3_QR;
