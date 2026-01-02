@@ -38,9 +38,10 @@ void db_init(void)
     return;
   }
 
-  /* Performance optimizations */
-  sqlite3_exec(db, "PRAGMA cache_size = -65536", NULL, NULL, NULL);  /* 64MB cache */
-  sqlite3_exec(db, "PRAGMA mmap_size = 268435456", NULL, NULL, NULL); /* 256MB mmap */
+  /* Performance optimizations for large RAM systems */
+  sqlite3_exec(db, "PRAGMA cache_size = -4194304", NULL, NULL, NULL);  /* 4GB cache */
+  sqlite3_exec(db, "PRAGMA mmap_size = 34359738368", NULL, NULL, NULL); /* 32GB mmap */
+  sqlite3_exec(db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
 
   /* Prepare exact match statement */
   if (sqlite3_prepare_v2(db,
