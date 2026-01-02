@@ -1664,16 +1664,14 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
   GETSHORT(qtype, p);
   GETSHORT(qclass, p);
 
+/* SQLITE BLOCKING DISABLED FOR TESTING
 #ifdef HAVE_SQLITE
-  /* Check if domain should be blocked */
   {
     char *block_ipv4 = NULL, *block_ipv6 = NULL;
-
     if (db_get_block_ips(name, &block_ipv4, &block_ipv6))
       {
         union all_addr block_addr;
         int blocked = 0;
-
         if (qtype == T_A && block_ipv4 && inet_pton(AF_INET, block_ipv4, &block_addr.addr4) == 1)
           {
             log_query(F_CONFIG | F_FORWARD | F_IPV4, name, &block_addr, "blocked", 0);
@@ -1690,7 +1688,6 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
               anscount++;
             blocked = 1;
           }
-
         if (blocked)
           {
             header->hb3 = (header->hb3 & ~(HB3_AA | HB3_TC)) | HB3_QR;
@@ -1705,6 +1702,7 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
       }
   }
 #endif
+*/
 
   ans = 0; /* have we answered this question */
   
