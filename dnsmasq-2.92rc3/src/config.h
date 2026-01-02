@@ -188,6 +188,7 @@ RESOLVFILE
 #define HAVE_IPSET 
 #define HAVE_LOOP
 #define HAVE_DUMPFILE
+#define HAVE_SQLITE
 
 /* Build options which require external libraries.
    
@@ -474,6 +475,10 @@ static char *compile_opts =
 #ifndef HAVE_DUMPFILE
 "no-"
 #endif
-"dumpfile";
+"dumpfile "
+#ifndef HAVE_SQLITE
+"no-"
+#endif
+"SQLite";
 
 #endif /* defined(DNSMASQ_COMPILE_OPTS) */

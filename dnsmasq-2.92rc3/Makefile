@@ -67,8 +67,10 @@ nettle_cflags = `echo $(COPTS) | $(top)/bld/pkg-wrapper HAVE_DNSSEC     $(PKG_CO
 nettle_libs =   `echo $(COPTS) | $(top)/bld/pkg-wrapper HAVE_DNSSEC     $(PKG_CONFIG) --libs 'nettle hogweed'`
 gmp_libs =      `echo $(COPTS) | $(top)/bld/pkg-wrapper HAVE_DNSSEC NO_GMP --copy -lgmp`
 sunos_libs =    `if uname | grep SunOS >/dev/null 2>&1; then echo -lsocket -lnsl -lposix4; fi`
-nft_cflags =    `echo $(COPTS) | $(top)/bld/pkg-wrapper HAVE_NFTSET $(PKG_CONFIG) --cflags libnftables` 
+nft_cflags =    `echo $(COPTS) | $(top)/bld/pkg-wrapper HAVE_NFTSET $(PKG_CONFIG) --cflags libnftables`
 nft_libs =      `echo $(COPTS) | $(top)/bld/pkg-wrapper HAVE_NFTSET $(PKG_CONFIG) --libs libnftables`
+sqlite_cflags = `if uname | grep -q FreeBSD; then echo -I/usr/local/include; else $(PKG_CONFIG) --cflags sqlite3 2>/dev/null; fi`
+sqlite_libs =   `if uname | grep -q FreeBSD; then echo -L/usr/local/lib -lsqlite3; else $(PKG_CONFIG) --libs sqlite3 2>/dev/null || echo -lsqlite3; fi`
 version =       -DVERSION='\"`$(top)/bld/get-version $(top)`\"'
 
 sum?=$(shell echo $(CC) -DDNSMASQ_COMPILE_FLAGS="$(CFLAGS)" -DDNSMASQ_COMPILE_OPTS $(COPTS) -E $(top)/$(SRC)/dnsmasq.h | ( md5sum 2>/dev/null || md5 ) | cut -f 1 -d ' ')
@@ -81,7 +83,7 @@ objs = cache.o rfc1035.o util.o option.o forward.o network.o \
        dhcp-common.o outpacket.o radv.o slaac.o auth.o ipset.o pattern.o \
        domain.o dnssec.o blockdata.o tables.o loop.o inotify.o \
        poll.o rrfilter.o edns0.o arp.o crypto.o dump.o ubus.o \
-       metrics.o domain-match.o nftset.o
+       metrics.o domain-match.o nftset.o db.o
 
 hdrs = dnsmasq.h config.h dhcp-protocol.h dhcp6-protocol.h \
        dns-protocol.h radv-protocol.h ip6addr.h metrics.h
@@ -89,8 +91,8 @@ hdrs = dnsmasq.h config.h dhcp-protocol.h dhcp6-protocol.h \
 all : $(BUILDDIR)
 	@cd $(BUILDDIR) && $(MAKE) \
  top="$(top)" \
- build_cflags="$(version) $(dbus_cflags) $(idn2_cflags) $(idn_cflags) $(ct_cflags) $(lua_cflags) $(nettle_cflags) $(nft_cflags)" \
- build_libs="$(dbus_libs) $(idn2_libs) $(idn_libs) $(ct_libs) $(lua_libs) $(sunos_libs) $(nettle_libs) $(gmp_libs) $(ubus_libs) $(nft_libs)" \
+ build_cflags="$(version) $(dbus_cflags) $(idn2_cflags) $(idn_cflags) $(ct_cflags) $(lua_cflags) $(nettle_cflags) $(nft_cflags) $(sqlite_cflags)" \
+ build_libs="$(dbus_libs) $(idn2_libs) $(idn_libs) $(ct_libs) $(lua_libs) $(sunos_libs) $(nettle_libs) $(gmp_libs) $(ubus_libs) $(nft_libs) $(sqlite_libs)" \
  -f $(top)/Makefile dnsmasq 
 
 mostly_clean :
@@ -112,8 +114,8 @@ all-i18n : $(BUILDDIR)
 	@cd $(BUILDDIR) && $(MAKE) \
  top="$(top)" \
  i18n=-DLOCALEDIR=\'\"$(LOCALEDIR)\"\' \
- build_cflags="$(version) $(dbus_cflags) $(idn2_cflags) $(idn_cflags) $(ct_cflags) $(lua_cflags) $(nettle_cflags) $(nft_cflags)" \
- build_libs="$(dbus_libs) $(idn2_libs) $(idn_libs) $(ct_libs) $(lua_libs) $(sunos_libs) $(nettle_libs) $(gmp_libs) $(ubus_libs) $(nft_libs)"  \
+ build_cflags="$(version) $(dbus_cflags) $(idn2_cflags) $(idn_cflags) $(ct_cflags) $(lua_cflags) $(nettle_cflags) $(nft_cflags) $(sqlite_cflags)" \
+ build_libs="$(dbus_libs) $(idn2_libs) $(idn_libs) $(ct_libs) $(lua_libs) $(sunos_libs) $(nettle_libs) $(gmp_libs) $(ubus_libs) $(nft_libs) $(sqlite_libs)"  \
  -f $(top)/Makefile dnsmasq
 	for f in `cd $(PO); echo *.po`; do \
 		cd $(top) && cd $(BUILDDIR) && $(MAKE) top="$(top)" -f $(top)/Makefile $${f%.po}.mo; \

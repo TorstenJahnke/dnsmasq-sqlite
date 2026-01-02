@@ -113,7 +113,11 @@ int main (int argc, char **argv)
   rand_init(); /* Must precede read_opts() */
   
   read_opts(argc, argv, compile_opts);
- 
+
+#ifdef HAVE_SQLITE
+  db_init();
+#endif
+
 #ifdef HAVE_LINUX_NETWORK
   daemon->kernel_version = kernel_version();
 #endif
