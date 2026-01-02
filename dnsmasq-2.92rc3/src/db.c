@@ -164,7 +164,11 @@ int db_check_block(const char *name)
       if (bind_rc == SQLITE_OK)
       {
         int step_rc = sqlite3_step(stmt_wildcard);
-        printf("SQLite: step result: %d (SQLITE_ROW=%d)\n", step_rc, SQLITE_ROW);
+        printf("SQLite: step result: %d (SQLITE_ROW=%d, SQLITE_DONE=%d)\n", step_rc, SQLITE_ROW, SQLITE_DONE);
+        if (step_rc != SQLITE_ROW && step_rc != SQLITE_DONE)
+        {
+          printf("SQLite ERROR: %s\n", sqlite3_errmsg(db));
+        }
         if (step_rc == SQLITE_ROW)
         {
           printf("SQLite: BLOCK wildcard %s (matched %s)\n", name, p);
