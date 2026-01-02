@@ -157,10 +157,15 @@ int db_check_block(const char *name)
     p = name;
     while (p && *p)
     {
+      printf("SQLite: checking wildcard suffix: '%s'\n", p);
       sqlite3_reset(stmt_wildcard);
-      if (sqlite3_bind_text(stmt_wildcard, 1, p, -1, SQLITE_TRANSIENT) == SQLITE_OK)
+      int bind_rc = sqlite3_bind_text(stmt_wildcard, 1, p, -1, SQLITE_TRANSIENT);
+      printf("SQLite: bind result: %d\n", bind_rc);
+      if (bind_rc == SQLITE_OK)
       {
-        if (sqlite3_step(stmt_wildcard) == SQLITE_ROW)
+        int step_rc = sqlite3_step(stmt_wildcard);
+        printf("SQLite: step result: %d (SQLITE_ROW=%d)\n", step_rc, SQLITE_ROW);
+        if (step_rc == SQLITE_ROW)
         {
           printf("SQLite: BLOCK wildcard %s (matched %s)\n", name, p);
           return 1;
@@ -170,6 +175,10 @@ int db_check_block(const char *name)
       p = strchr(p, '.');
       if (p) p++;
     }
+  }
+  else
+  {
+    printf("SQLite: stmt_wildcard is NULL!\n");
   }
 
   return 0;
