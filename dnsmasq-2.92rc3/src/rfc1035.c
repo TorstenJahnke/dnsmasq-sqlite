@@ -1670,14 +1670,11 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
   /* SQLite Blocking: Check if domain should be blocked */
   if (qclass == C_IN && (qtype == T_A || qtype == T_AAAA))
     {
-      int blocked = db_check_block(name);
-      my_syslog(LOG_DEBUG, _("SQLite: %s -> %s"), name, blocked ? "BLOCKED" : "allowed");
-      if (blocked)
+      char *block_ipv4 = NULL;
+      char *block_ipv6 = NULL;
+      if (db_get_block_ips(name, &block_ipv4, &block_ipv6))
         {
           /* Domain is blocked - return block IP */
-          char *block_ipv4 = db_get_block_ipv4();
-          char *block_ipv6 = db_get_block_ipv6();
-
           if (qtype == T_A && block_ipv4)
             {
               struct in_addr block_addr;
