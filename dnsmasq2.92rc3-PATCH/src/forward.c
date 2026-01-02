@@ -344,23 +344,6 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
 	  goto reply;
 	}
 
-      /* SQLite Blocking: Check if domain should be blocked */
-#ifdef HAVE_SQLITE
-      {
-        char *block_ipv4 = NULL;
-        char *block_ipv6 = NULL;
-        if (db_get_block_ips(daemon->namebuff, &block_ipv4, &block_ipv6))
-          {
-            /* Domain is blocked - return 0.0.0.0 for A queries */
-            my_syslog(LOG_INFO, _("SQLite blocking: %s -> blocked"), daemon->namebuff);
-            /* Set flags to indicate blocked (NXDOMAIN or return 0.0.0.0) */
-            flags = F_NXDOMAIN;
-            ede = EDE_BLOCKED;
-            goto reply;
-          }
-      }
-#endif
-
       /* SQLite DNS Forwarding: Check domain_dns_allow and domain_dns_block tables */
       char *forward_server = db_get_forward_server(daemon->namebuff);
       int sqlite_forwarding = 0;

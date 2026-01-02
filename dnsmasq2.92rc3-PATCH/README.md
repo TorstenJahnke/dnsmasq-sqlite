@@ -18,7 +18,8 @@ Dieser Ordner enthält die **gepatchten Quelldateien** von dnsmasq 2.92rc3 mit S
 - `src/dnsmasq.h` - Header mit SQLite-Strukturdefinitionen
 - `src/config.h` - Build-Konfiguration (HAVE_SQLITE, HAVE_REGEX), compile_opts
 - `src/forward.c` - DNS-Forwarding mit SQLite-Integration
-- `src/option.c` - Config-Option `sqlite-database=` hinzugefügt
+- `src/option.c` - Config-Optionen (sqlite-database, sqlite-block-ipv4/ipv6)
+- `src/rfc1035.c` - SQLite Blocking (gibt Block-IP zurück)
 - `Makefile` - Build-System mit SQLite/PCRE2 Support
 
 **Dokumentation:**
@@ -102,7 +103,12 @@ sudo make install
 
 In `/usr/local/etc/dnsmasq.conf`:
 ```conf
+# SQLite Datenbank
 sqlite-database=/usr/local/etc/dnsmasq/aviontex.db
+
+# Block-IPs für geblockte Domains
+sqlite-block-ipv4=0.0.0.0
+sqlite-block-ipv6=::
 ```
 
 Alternativ über Umgebungsvariable (falls config-Option nicht funktioniert):
