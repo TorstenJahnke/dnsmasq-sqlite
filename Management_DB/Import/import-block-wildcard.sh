@@ -67,8 +67,7 @@ tr '[:upper:]' '[:lower:]' < "$INPUT_FILE" | \
 sqlite3 "$DB_FILE" <<EOF
 BEGIN TRANSACTION;
 
-.mode list
-.separator "\n"
+.mode csv
 
 CREATE TEMP TABLE temp_import_block_wildcard (Domain TEXT);
 .import '${TEMP_FILE}' temp_import_block_wildcard

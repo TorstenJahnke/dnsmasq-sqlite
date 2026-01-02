@@ -75,8 +75,7 @@ tr '[:upper:]' '[:lower:]' < "$INPUT_FILE" | \
 sqlite3 "$DB_FILE" <<EOF
 BEGIN TRANSACTION;
 
-.mode list
-.separator "\n"
+.mode csv
 
 -- Import to temp table
 CREATE TEMP TABLE temp_import_block_exact (Domain TEXT);
