@@ -1215,13 +1215,11 @@ step3:
   printf("DEBUG: step3 - checking block_wildcard\n");
   fflush(stdout);
 
-  /* Step 3: Check block_wildcard
-   * PERFORMANCE v4.2: Now uses suffix-based IN queries (100-1000x faster!)
-   * Old: WHERE Domain = ? OR ? LIKE '%.' || Domain (Full Table Scan O(n))
-   * New: WHERE Domain IN (?, ?, ...) using suffixes (Index Scan O(log n) each) */
+  /* Step 3: Check block_wildcard_fast (materialized table with index)
+   * NOTE: Using _fast table instead of VIEW for performance */
   if (db_conn)
   {
-    if (suffix_wildcard_query_match(db_conn, "block_wildcard", name,
+    if (suffix_wildcard_query_match(db_conn, "block_wildcard_fast", name,
                                      matched_domain_buf, sizeof(matched_domain_buf)))
     {
       printf("db_lookup: %s matched block_wildcard '%s' -> DNS_BLOCK\n", name, matched_domain_buf);
