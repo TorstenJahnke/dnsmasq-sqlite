@@ -6,7 +6,7 @@
 
 # Konfiguration
 BLACKLIST="/usr/local/etc/blacklist.txt"
-DATABASE="/usr/local/etc/dnsmasq/aviontex01.db"
+DATABASE="/usr/local/etc/dnsmasq/aviontex.db"
 
 # Farben
 RED='\033[0;31m'

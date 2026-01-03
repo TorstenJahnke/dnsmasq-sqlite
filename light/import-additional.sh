@@ -8,7 +8,7 @@
 
 # Konfiguration
 ADDITIONAL="${1:-/usr/local/etc/additional-blacklist.txt}"
-DATABASE="${2:-/usr/local/etc/dnsmasq/aviontex01.db}"
+DATABASE="${2:-/usr/local/etc/dnsmasq/aviontex.db}"
 
 echo ""
 echo "=========================================="
