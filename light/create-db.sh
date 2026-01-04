@@ -94,9 +94,9 @@ SQL
 # Berechtigungen setzen
 echo "[5/6] Setze Berechtigungen..."
 chown root:${DNSMASQ_GROUP} "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
-chmod 640 "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
+chmod 644 "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
 chown root:${DNSMASQ_GROUP} "$(dirname "$DATABASE")"
-chmod 750 "$(dirname "$DATABASE")"
+chmod 755 "$(dirname "$DATABASE")"
 
 # Verifizieren
 echo "[6/6] Verifiziere..."

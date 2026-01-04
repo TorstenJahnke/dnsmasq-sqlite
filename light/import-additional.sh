@@ -50,7 +50,7 @@ SQL
 
 # Berechtigungen setzen
 chown root:${DNSMASQ_GROUP} "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
-chmod 640 "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
+chmod 644 "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
 
 # Statistik
 AFTER=$(sqlite3 "$DATABASE" "SELECT COUNT(*) FROM block_wildcard;")
