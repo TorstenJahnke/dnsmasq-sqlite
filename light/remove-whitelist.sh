@@ -9,7 +9,7 @@
 # Konfiguration
 WHITELIST="${1:-/usr/local/etc/whitelist.txt}"
 DATABASE="${2:-/usr/local/etc/dnsmasq/aviontex.db}"
-DNSMASQ_GROUP="dnsmasq"
+DNSMASQ_GROUP="wheel"
 
 echo ""
 echo "=========================================="
