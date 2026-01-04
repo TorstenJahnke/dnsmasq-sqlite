@@ -1,0 +1,16 @@
+#!/bin/sh
+#
+# /etc/rc.local - FreeBSD local startup script
+#
+# Befehle:
+#   /usr/local/scripts/dnsmasq-multi.sh start   - Alle Instanzen starten
+#   /usr/local/scripts/dnsmasq-multi.sh status  - Status anzeigen
+#   /usr/local/scripts/dnsmasq-multi.sh stop    - Alle Instanzen stoppen
+#   /usr/local/scripts/dnsmasq-multi.sh restart - Neustart aller Instanzen
+#
+# Installation:
+#   cp /usr/local/scripts/rc.local /etc/rc.local
+#   chmod +x /etc/rc.local
+#
+
+/usr/local/scripts/dnsmasq-multi.sh start
