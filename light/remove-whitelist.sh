@@ -9,6 +9,7 @@
 # Konfiguration
 WHITELIST="${1:-/usr/local/etc/whitelist.txt}"
 DATABASE="${2:-/usr/local/etc/dnsmasq/aviontex.db}"
+DNSMASQ_GROUP="dnsmasq"
 
 echo ""
 echo "=========================================="
@@ -56,6 +57,10 @@ DELETE FROM block_hosts WHERE Domain IN (SELECT Domain FROM whitelist);
 -- Aufräumen
 DROP TABLE whitelist;
 SQL
+
+# Berechtigungen setzen
+chown root:${DNSMASQ_GROUP} "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
+chmod 640 "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
 
 # Statistik
 AFTER=$(sqlite3 "$DATABASE" "SELECT COUNT(*) FROM block_wildcard;")

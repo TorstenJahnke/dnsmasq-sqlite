@@ -9,6 +9,7 @@
 # Konfiguration
 ADDITIONAL="${1:-/usr/local/etc/additional-blacklist.txt}"
 DATABASE="${2:-/usr/local/etc/dnsmasq/aviontex.db}"
+DNSMASQ_GROUP="dnsmasq"
 
 echo ""
 echo "=========================================="
@@ -46,6 +47,10 @@ PRAGMA cache_size = -1048576;
 .mode list
 .import $ADDITIONAL block_wildcard
 SQL
+
+# Berechtigungen setzen
+chown root:${DNSMASQ_GROUP} "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
+chmod 640 "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
 
 # Statistik
 AFTER=$(sqlite3 "$DATABASE" "SELECT COUNT(*) FROM block_wildcard;")
