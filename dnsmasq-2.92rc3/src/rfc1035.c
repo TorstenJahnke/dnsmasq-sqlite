@@ -1668,13 +1668,13 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
 
 #ifdef HAVE_SQLITE
   /* SQLite Blocking: Check if domain should be blocked */
-  if (qclass == C_IN && (qtype == T_A || qtype == T_AAAA))
+  if (qclass == C_IN && (qtype == T_A || qtype == T_AAAA || qtype == T_TXT || qtype == T_MX))
     {
       char *block_ipv4 = NULL;
       char *block_ipv6 = NULL;
       if (db_get_block_ips(name, &block_ipv4, &block_ipv6))
         {
-          /* Domain is blocked - return block IP */
+          /* Domain is blocked - return appropriate record type */
           if (qtype == T_A && block_ipv4)
             {
               struct in_addr block_addr;
@@ -1695,6 +1695,31 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
                   log_query(F_FORWARD | F_CONFIG | F_IPV6, name, (union all_addr *)&block_addr6, NULL, 0);
                   if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
                                           daemon->local_ttl, NULL, T_AAAA, C_IN, "6", &block_addr6))
+                    anscount++;
+                  ans = 1;
+                }
+            }
+          else if (qtype == T_TXT)
+            {
+              char *block_txt = db_get_block_txt();
+              if (block_txt)
+                {
+                  log_query(F_FORWARD | F_CONFIG, name, NULL, NULL, 0);
+                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                          daemon->local_ttl, NULL, T_TXT, C_IN, "t", strlen(block_txt), block_txt))
+                    anscount++;
+                  ans = 1;
+                }
+            }
+          else if (qtype == T_MX)
+            {
+              char *block_mx = db_get_block_mx();
+              if (block_mx)
+                {
+                  int mx_prio = db_get_block_mx_prio();
+                  log_query(F_FORWARD | F_CONFIG, name, NULL, NULL, 0);
+                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                          daemon->local_ttl, NULL, T_MX, C_IN, "sd", mx_prio, block_mx))
                     anscount++;
                   ans = 1;
                 }

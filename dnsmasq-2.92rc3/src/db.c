@@ -28,9 +28,12 @@ static sqlite3 *db = NULL;
 static char *db_file = NULL;
 static char *tld2_file = NULL;
 
-/* Block IPs (returned for blocked domains) */
+/* Block responses (returned for blocked domains) */
 static char *block_ipv4 = NULL;  /* e.g., "0.0.0.0" */
 static char *block_ipv6 = NULL;  /* e.g., "::" */
+static char *block_txt = NULL;   /* e.g., "Privacy Protection Active." */
+static char *block_mx = NULL;    /* e.g., "mx-protect.keweon.center." (with priority) */
+static int block_mx_prio = 10;   /* MX priority */
 
 /* Prepared statements */
 static sqlite3_stmt *stmt_block_hosts = NULL;     /* Exact match */
@@ -257,6 +260,37 @@ void db_set_block_ipv6(char *ip)
   if (block_ipv6) free(block_ipv6);
   block_ipv6 = ip ? strdup(ip) : NULL;
 }
+
+void db_set_block_txt(char *txt)
+{
+  if (block_txt) free(block_txt);
+  block_txt = txt ? strdup(txt) : NULL;
+}
+
+void db_set_block_mx(char *mx)
+{
+  if (!mx) {
+    if (block_mx) free(block_mx);
+    block_mx = NULL;
+    return;
+  }
+
+  /* Parse "priority hostname" format, e.g., "10 mx.example.com." */
+  char *space = strchr(mx, ' ');
+  if (space) {
+    block_mx_prio = atoi(mx);
+    if (block_mx) free(block_mx);
+    block_mx = strdup(space + 1);
+  } else {
+    block_mx_prio = 10;
+    if (block_mx) free(block_mx);
+    block_mx = strdup(mx);
+  }
+}
+
+char *db_get_block_txt(void) { return block_txt; }
+char *db_get_block_mx(void) { return block_mx; }
+int db_get_block_mx_prio(void) { return block_mx_prio; }
 
 void db_init(void)
 {
