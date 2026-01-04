@@ -388,7 +388,10 @@ void db_cleanup(void)
  * ============================================================================ */
 
 /* Check if domain should be blocked
- * Returns: 1 if blocked, 0 if not
+ * Returns:
+ *   0 = not blocked
+ *   1 = blocked by block_hosts (exact match) - only A/AAAA
+ *   2 = blocked by block_wildcard (base domain) - A/AAAA/TXT/MX
  */
 int db_check_block(const char *name)
 {
@@ -413,7 +416,7 @@ int db_check_block(const char *name)
     sqlite3_bind_text(stmt_block_hosts, 1, name_lower, -1, SQLITE_STATIC);
     if (sqlite3_step(stmt_block_hosts) == SQLITE_ROW) {
       printf("SQLite: BLOCK exact %s\n", name_lower);
-      return 1;
+      return 1;  /* Exact match - no TXT/MX */
     }
   }
 
@@ -425,7 +428,7 @@ int db_check_block(const char *name)
     sqlite3_bind_text(stmt_block_wildcard, 1, base, -1, SQLITE_STATIC);
     if (sqlite3_step(stmt_block_wildcard) == SQLITE_ROW) {
       printf("SQLite: BLOCK wildcard %s (base: %s)\n", name_lower, base);
-      return 1;
+      return 2;  /* Wildcard match - with TXT/MX */
     }
   }
 
