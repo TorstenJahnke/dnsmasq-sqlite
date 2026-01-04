@@ -442,6 +442,52 @@ char *db_get_rewrite_ip(const char *source_ip)
   return NULL;
 }
 
+/* Rewrite IPv4 address if rule exists
+ * Returns: 1 if rewritten (addr modified), 0 if no rule
+ */
+int db_rewrite_ipv4(struct in_addr *addr)
+{
+  if (!addr || !db || !stmt_block_ips)
+    return 0;
+
+  char ip_str[INET_ADDRSTRLEN];
+  if (!inet_ntop(AF_INET, addr, ip_str, sizeof(ip_str)))
+    return 0;
+
+  char *target = db_get_rewrite_ip(ip_str);
+  if (target) {
+    struct in_addr new_addr;
+    if (inet_pton(AF_INET, target, &new_addr) == 1) {
+      *addr = new_addr;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* Rewrite IPv6 address if rule exists
+ * Returns: 1 if rewritten (addr modified), 0 if no rule
+ */
+int db_rewrite_ipv6(struct in6_addr *addr)
+{
+  if (!addr || !db || !stmt_block_ips)
+    return 0;
+
+  char ip_str[INET6_ADDRSTRLEN];
+  if (!inet_ntop(AF_INET6, addr, ip_str, sizeof(ip_str)))
+    return 0;
+
+  char *target = db_get_rewrite_ip(ip_str);
+  if (target) {
+    struct in6_addr new_addr;
+    if (inet_pton(AF_INET6, target, &new_addr) == 1) {
+      *addr = new_addr;
+      return 1;
+    }
+  }
+  return 0;
+}
+
 /* Legacy compatibility functions */
 struct in_addr *db_get_block_ipv4(void)
 {

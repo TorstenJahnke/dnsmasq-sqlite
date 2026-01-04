@@ -16,6 +16,67 @@
 
 #include "dnsmasq.h"
 
+#ifdef HAVE_SQLITE
+/* Rewrite IP addresses in DNS response based on block_ips table
+ * Scans answer section for A/AAAA records and rewrites matching IPs
+ * Returns: number of IPs rewritten
+ */
+static int sqlite_rewrite_response_ips(struct dns_header *header, size_t n)
+{
+  unsigned char *p, *ansp;
+  int i, rewritten = 0;
+  unsigned short type, class, rdlen;
+
+  /* Skip past question section */
+  p = (unsigned char *)(header + 1);
+  for (i = 0; i < ntohs(header->qdcount); i++) {
+    while (*p && p < (unsigned char *)header + n)
+      p += *p + 1;
+    p += 5; /* null byte + qtype (2) + qclass (2) */
+  }
+
+  /* Process answer section */
+  for (i = 0; i < ntohs(header->ancount) && p < (unsigned char *)header + n; i++) {
+    /* Skip name */
+    while (*p && p < (unsigned char *)header + n) {
+      if ((*p & 0xc0) == 0xc0) {
+        p += 2;
+        break;
+      }
+      p += *p + 1;
+    }
+    if (*p == 0) p++;
+
+    if (p + 10 > (unsigned char *)header + n)
+      break;
+
+    GETSHORT(type, p);
+    GETSHORT(class, p);
+    p += 4; /* skip TTL */
+    GETSHORT(rdlen, p);
+
+    ansp = p; /* pointer to rdata */
+
+    if (class == C_IN) {
+      if (type == T_A && rdlen == 4) {
+        struct in_addr *addr = (struct in_addr *)ansp;
+        if (db_rewrite_ipv4(addr))
+          rewritten++;
+      }
+      else if (type == T_AAAA && rdlen == 16) {
+        struct in6_addr *addr = (struct in6_addr *)ansp;
+        if (db_rewrite_ipv6(addr))
+          rewritten++;
+      }
+    }
+
+    p += rdlen;
+  }
+
+  return rewritten;
+}
+#endif
+
 static struct frec *get_new_frec(time_t now, struct server *serv, int force);
 static struct frec *lookup_frec(time_t now, char *target, int class, int rrtype, int id, int flags, int flagmask);
 #ifdef HAVE_DNSSEC
@@ -846,10 +907,16 @@ static size_t process_reply(struct dns_header *header, time_t now, struct server
 	    }
 	}
       
-      if (RCODE(header) == NOERROR && rrfilter(header, &n, RRFILTER_CONF) > 0) 
+      if (RCODE(header) == NOERROR && rrfilter(header, &n, RRFILTER_CONF) > 0)
 	ede = EDE_FILTERED;
+
+#ifdef HAVE_SQLITE
+      /* Rewrite IPs in response based on block_ips table */
+      if (RCODE(header) == NOERROR)
+	sqlite_rewrite_response_ips(header, n);
+#endif
     }
-  
+
 #ifdef HAVE_DNSSEC
   if (option_bool(OPT_DNSSEC_VALID))
     {

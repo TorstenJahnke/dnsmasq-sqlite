@@ -1984,6 +1984,8 @@ int db_get_block_ips(const char *domain, char **ipv4_out, char **ipv6_out);
 
 /* IP rewriting */
 char *db_get_rewrite_ip(const char *source_ip);  /* Returns target IP or NULL */
+int db_rewrite_ipv4(struct in_addr *addr);       /* Rewrite in-place, returns 1 if changed */
+int db_rewrite_ipv6(struct in6_addr *addr);      /* Rewrite in-place, returns 1 if changed */
 
 /* Legacy compatibility */
 struct in_addr *db_get_block_ipv4(void);
