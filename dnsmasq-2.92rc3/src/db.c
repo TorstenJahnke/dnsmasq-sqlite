@@ -28,9 +28,12 @@ static sqlite3 *db = NULL;
 static char *db_file = NULL;
 static char *tld2_file = NULL;
 
-/* Block IPs (returned for blocked domains) */
+/* Block responses (returned for blocked domains) */
 static char *block_ipv4 = NULL;  /* e.g., "0.0.0.0" */
 static char *block_ipv6 = NULL;  /* e.g., "::" */
+static char *block_txt = NULL;   /* e.g., "Privacy Protection Active." */
+static char *block_mx = NULL;    /* e.g., "mx-protect.keweon.center." (with priority) */
+static int block_mx_prio = 10;   /* MX priority */
 
 /* Prepared statements */
 static sqlite3_stmt *stmt_block_hosts = NULL;     /* Exact match */
@@ -258,6 +261,37 @@ void db_set_block_ipv6(char *ip)
   block_ipv6 = ip ? strdup(ip) : NULL;
 }
 
+void db_set_block_txt(char *txt)
+{
+  if (block_txt) free(block_txt);
+  block_txt = txt ? strdup(txt) : NULL;
+}
+
+void db_set_block_mx(char *mx)
+{
+  if (!mx) {
+    if (block_mx) free(block_mx);
+    block_mx = NULL;
+    return;
+  }
+
+  /* Parse "priority hostname" format, e.g., "10 mx.example.com." */
+  char *space = strchr(mx, ' ');
+  if (space) {
+    block_mx_prio = atoi(mx);
+    if (block_mx) free(block_mx);
+    block_mx = strdup(space + 1);
+  } else {
+    block_mx_prio = 10;
+    if (block_mx) free(block_mx);
+    block_mx = strdup(mx);
+  }
+}
+
+char *db_get_block_txt(void) { return block_txt; }
+char *db_get_block_mx(void) { return block_mx; }
+int db_get_block_mx_prio(void) { return block_mx_prio; }
+
 void db_init(void)
 {
   if (db)
@@ -354,7 +388,10 @@ void db_cleanup(void)
  * ============================================================================ */
 
 /* Check if domain should be blocked
- * Returns: 1 if blocked, 0 if not
+ * Returns:
+ *   0 = not blocked
+ *   1 = blocked by block_hosts (exact match) - only A/AAAA
+ *   2 = blocked by block_wildcard (base domain) - A/AAAA/TXT/MX
  */
 int db_check_block(const char *name)
 {
@@ -379,7 +416,7 @@ int db_check_block(const char *name)
     sqlite3_bind_text(stmt_block_hosts, 1, name_lower, -1, SQLITE_STATIC);
     if (sqlite3_step(stmt_block_hosts) == SQLITE_ROW) {
       printf("SQLite: BLOCK exact %s\n", name_lower);
-      return 1;
+      return 1;  /* Exact match - no TXT/MX */
     }
   }
 
@@ -391,7 +428,7 @@ int db_check_block(const char *name)
     sqlite3_bind_text(stmt_block_wildcard, 1, base, -1, SQLITE_STATIC);
     if (sqlite3_step(stmt_block_wildcard) == SQLITE_ROW) {
       printf("SQLite: BLOCK wildcard %s (base: %s)\n", name_lower, base);
-      return 1;
+      return 2;  /* Wildcard match - with TXT/MX */
     }
   }
 
@@ -440,6 +477,52 @@ char *db_get_rewrite_ip(const char *source_ip)
   }
 
   return NULL;
+}
+
+/* Rewrite IPv4 address if rule exists
+ * Returns: 1 if rewritten (addr modified), 0 if no rule
+ */
+int db_rewrite_ipv4(struct in_addr *addr)
+{
+  if (!addr || !db || !stmt_block_ips)
+    return 0;
+
+  char ip_str[INET_ADDRSTRLEN];
+  if (!inet_ntop(AF_INET, addr, ip_str, sizeof(ip_str)))
+    return 0;
+
+  char *target = db_get_rewrite_ip(ip_str);
+  if (target) {
+    struct in_addr new_addr;
+    if (inet_pton(AF_INET, target, &new_addr) == 1) {
+      *addr = new_addr;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* Rewrite IPv6 address if rule exists
+ * Returns: 1 if rewritten (addr modified), 0 if no rule
+ */
+int db_rewrite_ipv6(struct in6_addr *addr)
+{
+  if (!addr || !db || !stmt_block_ips)
+    return 0;
+
+  char ip_str[INET6_ADDRSTRLEN];
+  if (!inet_ntop(AF_INET6, addr, ip_str, sizeof(ip_str)))
+    return 0;
+
+  char *target = db_get_rewrite_ip(ip_str);
+  if (target) {
+    struct in6_addr new_addr;
+    if (inet_pton(AF_INET6, target, &new_addr) == 1) {
+      *addr = new_addr;
+      return 1;
+    }
+  }
+  return 0;
 }
 
 /* Legacy compatibility functions */

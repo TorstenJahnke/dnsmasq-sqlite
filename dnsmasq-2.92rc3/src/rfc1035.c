@@ -1667,34 +1667,63 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
   ans = 0; /* have we answered this question */
 
 #ifdef HAVE_SQLITE
-  /* SQLite Blocking: Check if domain should be blocked */
-  if (qclass == C_IN && (qtype == T_A || qtype == T_AAAA))
+  /* SQLite Blocking: Check if domain should be blocked
+   * db_check_block() returns:
+   *   0 = not blocked
+   *   1 = blocked by block_hosts (exact) - only A/AAAA
+   *   2 = blocked by block_wildcard (base domain) - A/AAAA/TXT/MX
+   */
+  if (qclass == C_IN && (qtype == T_A || qtype == T_AAAA || qtype == T_TXT || qtype == T_MX))
     {
-      char *block_ipv4 = NULL;
-      char *block_ipv6 = NULL;
-      if (db_get_block_ips(name, &block_ipv4, &block_ipv6))
+      int block_type = db_check_block(name);
+      if (block_type > 0)
         {
-          /* Domain is blocked - return block IP */
-          if (qtype == T_A && block_ipv4)
+          /* Domain is blocked - return appropriate record type */
+          if (qtype == T_A)
             {
-              struct in_addr block_addr;
-              if (inet_pton(AF_INET, block_ipv4, &block_addr) == 1)
+              struct in_addr *block_addr = db_get_block_ipv4();
+              if (block_addr)
                 {
-                  log_query(F_FORWARD | F_CONFIG | F_IPV4, name, (union all_addr *)&block_addr, NULL, 0);
+                  log_query(F_FORWARD | F_CONFIG | F_IPV4, name, (union all_addr *)block_addr, NULL, 0);
                   if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
-                                          daemon->local_ttl, NULL, T_A, C_IN, "4", &block_addr))
+                                          daemon->local_ttl, NULL, T_A, C_IN, "4", block_addr))
                     anscount++;
                   ans = 1;
                 }
             }
-          else if (qtype == T_AAAA && block_ipv6)
+          else if (qtype == T_AAAA)
             {
-              struct in6_addr block_addr6;
-              if (inet_pton(AF_INET6, block_ipv6, &block_addr6) == 1)
+              struct in6_addr *block_addr6 = db_get_block_ipv6();
+              if (block_addr6)
                 {
-                  log_query(F_FORWARD | F_CONFIG | F_IPV6, name, (union all_addr *)&block_addr6, NULL, 0);
+                  log_query(F_FORWARD | F_CONFIG | F_IPV6, name, (union all_addr *)block_addr6, NULL, 0);
                   if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
-                                          daemon->local_ttl, NULL, T_AAAA, C_IN, "6", &block_addr6))
+                                          daemon->local_ttl, NULL, T_AAAA, C_IN, "6", block_addr6))
+                    anscount++;
+                  ans = 1;
+                }
+            }
+          else if (qtype == T_TXT && block_type == 2)  /* Only for wildcard blocks */
+            {
+              char *block_txt = db_get_block_txt();
+              if (block_txt)
+                {
+                  log_query(F_FORWARD | F_CONFIG, name, NULL, NULL, 0);
+                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                          daemon->local_ttl, NULL, T_TXT, C_IN, "t", strlen(block_txt), block_txt))
+                    anscount++;
+                  ans = 1;
+                }
+            }
+          else if (qtype == T_MX && block_type == 2)  /* Only for wildcard blocks */
+            {
+              char *block_mx = db_get_block_mx();
+              if (block_mx)
+                {
+                  int mx_prio = db_get_block_mx_prio();
+                  log_query(F_FORWARD | F_CONFIG, name, NULL, NULL, 0);
+                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                          daemon->local_ttl, NULL, T_MX, C_IN, "sd", mx_prio, block_mx))
                     anscount++;
                   ans = 1;
                 }
