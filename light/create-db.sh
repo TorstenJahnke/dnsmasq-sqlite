@@ -7,6 +7,7 @@
 # Konfiguration
 BLACKLIST="/usr/local/etc/blacklist.txt"
 DATABASE="/usr/local/etc/dnsmasq/aviontex.db"
+DNSMASQ_GROUP="wheel"
 
 # Farben
 RED='\033[0;31m'
@@ -34,14 +35,14 @@ echo "Zieldatei:   $DATABASE"
 echo ""
 
 # Lösche alte Datenbank
-echo "[1/5] Lösche alte Datenbank..."
+echo "[1/6] Lösche alte Datenbank..."
 rm -f "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm"
 
 # Erstelle Verzeichnis falls nicht vorhanden
 mkdir -p "$(dirname "$DATABASE")"
 
 # Erstelle Datenbank
-echo "[2/5] Erstelle optimierte Datenbank..."
+echo "[2/6] Erstelle optimierte Datenbank..."
 sqlite3 "$DATABASE" << 'SQL'
 -- Import-Optimierungen (maximale Geschwindigkeit)
 PRAGMA page_size = 8192;
@@ -67,7 +68,7 @@ CREATE TABLE block_ips (
 SQL
 
 # Import
-echo "[3/5] Importiere Domains (das dauert bei $LINES Einträgen)..."
+echo "[3/6] Importiere Domains (das dauert bei $LINES Einträgen)..."
 START=$(date +%s)
 
 sqlite3 "$DATABASE" << SQL
@@ -82,7 +83,7 @@ END=$(date +%s)
 DURATION=$((END - START))
 
 # Optimieren
-echo "[4/5] Optimiere Datenbank..."
+echo "[4/6] Optimiere Datenbank..."
 sqlite3 "$DATABASE" << 'SQL'
 PRAGMA locking_mode = NORMAL;
 PRAGMA journal_mode = WAL;
@@ -90,8 +91,15 @@ PRAGMA synchronous = NORMAL;
 ANALYZE;
 SQL
 
+# Berechtigungen setzen
+echo "[5/6] Setze Berechtigungen..."
+chown root:${DNSMASQ_GROUP} "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
+chmod 644 "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
+chown root:${DNSMASQ_GROUP} "$(dirname "$DATABASE")"
+chmod 755 "$(dirname "$DATABASE")"
+
 # Verifizieren
-echo "[5/5] Verifiziere..."
+echo "[6/6] Verifiziere..."
 COUNT=$(sqlite3 "$DATABASE" "SELECT COUNT(*) FROM block_wildcard;")
 SIZE=$(ls -lh "$DATABASE" | awk '{print $5}')
 
