@@ -65,7 +65,7 @@ status_all() {
         CONF="${CONFDIR}/dnsmasq${i}.conf"
 
         if [ -f "$PID" ] && kill -0 $(cat "$PID") 2>/dev/null; then
-            PORT=$(grep "^port=" "$CONF" 2>/dev/null | cut -d= -f2)
+            PORT=$(grep -E "^[[:space:]]*port[[:space:]]*=" "$CONF" 2>/dev/null | sed 's/.*=[ ]*//' | tr -d ' ')
             echo "  [$i] RUNNING - PID $(cat $PID) - Port ${PORT:-?}"
             RUNNING=$((RUNNING + 1))
         else
