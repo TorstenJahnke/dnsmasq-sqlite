@@ -1994,6 +1994,9 @@ char *db_get_rewrite_ip(const char *source_ip);  /* Returns target IP or NULL */
 int db_rewrite_ipv4(struct in_addr *addr);       /* Rewrite in-place, returns 1 if changed */
 int db_rewrite_ipv6(struct in6_addr *addr);      /* Rewrite in-place, returns 1 if changed */
 
+/* Statistics (printed on SIGUSR1) */
+void db_print_stats(void);
+
 /* Legacy compatibility */
 struct in_addr *db_get_block_ipv4(void);
 struct in6_addr *db_get_block_ipv6(void);
