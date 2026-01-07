@@ -1539,6 +1539,9 @@ static void async_event(int pipe, time_t now)
       case EVENT_DUMP:
 	if (daemon->port != 0)
 	  dump_cache(now);
+#ifdef HAVE_SQLITE
+	db_print_stats();
+#endif
 	break;
 	
       case EVENT_ALARM:
