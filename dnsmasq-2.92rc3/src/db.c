@@ -1,5 +1,5 @@
 /* DNSMASQ-SQLITE High-Performance Blocking
- * Version: 7.0 - Optimized for 660M+ entries
+ * Version: 7.2 - Minimal (maximum performance, no overhead)
  *
  * Tables:
  *   block_wildcard - Base domain blocks all subdomains (info.com → *.info.com)
@@ -8,11 +8,10 @@
  *                    Supports CIDR notation (192.168.0.0/16 → Target_IP)
  *
  * Performance Features:
- *   - Bloom filter for fast negative lookups (1GB, <0.01% false positives)
  *   - CIDR rules loaded into RAM at startup
  *   - 2nd-level TLD aware (co.uk, com.au handled correctly)
  *   - IPv6 normalization (compressed ↔ expanded matching)
- *   - Statistics via SIGUSR1
+ *   - Aggressive SQLite settings for 128GB RAM
  */
 
 #include "dnsmasq.h"
@@ -22,7 +21,6 @@
 #include <ctype.h>
 #include <string.h>
 #include <stdlib.h>
-#include <signal.h>
 
 /* ============================================================================
  * Configuration
@@ -44,124 +42,6 @@ static int block_mx_prio = 10;
 static sqlite3_stmt *stmt_block_hosts = NULL;
 static sqlite3_stmt *stmt_block_wildcard = NULL;
 static sqlite3_stmt *stmt_block_ips = NULL;
-
-/* ============================================================================
- * Bloom Filter (1GB = 8 billion bits, for 660M entries → <0.01% FP rate)
- *
- * Formula: m = -n*ln(p) / (ln(2)^2)
- * For n=660M, p=0.0001: m ≈ 12.6 billion bits → we use 8 billion (1GB)
- * Optimal k = (m/n) * ln(2) ≈ 8 hash functions
- * ============================================================================ */
-
-#define BLOOM_SIZE_BYTES (1024UL * 1024UL * 1024UL)  /* 1GB */
-#define BLOOM_SIZE_BITS  (BLOOM_SIZE_BYTES * 8UL)     /* 8 billion bits */
-#define BLOOM_K          8                            /* Number of hash functions */
-
-static unsigned char *bloom_filter = NULL;
-static int bloom_loaded = 0;
-
-/* Statistics */
-static unsigned long stat_queries = 0;
-static unsigned long stat_bloom_hits = 0;      /* Bloom says "definitely not in set" */
-static unsigned long stat_bloom_checks = 0;    /* Bloom says "maybe in set", check DB */
-static unsigned long stat_blocks_exact = 0;
-static unsigned long stat_blocks_wildcard = 0;
-static unsigned long stat_rewrites_ipv4 = 0;
-static unsigned long stat_rewrites_ipv6 = 0;
-
-/* FNV-1a hash - fast and good distribution */
-static inline uint64_t fnv1a_hash(const char *str, uint64_t seed)
-{
-  uint64_t hash = 14695981039346656037ULL ^ seed;
-  while (*str) {
-    hash ^= (unsigned char)(*str++);
-    hash *= 1099511628211ULL;
-  }
-  return hash;
-}
-
-/* Set bit in bloom filter */
-static inline void bloom_set(const char *key)
-{
-  if (!bloom_filter) return;
-
-  for (int i = 0; i < BLOOM_K; i++) {
-    uint64_t hash = fnv1a_hash(key, i * 0x9E3779B97F4A7C15ULL);
-    uint64_t bit_pos = hash % BLOOM_SIZE_BITS;
-    bloom_filter[bit_pos / 8] |= (1 << (bit_pos % 8));
-  }
-}
-
-/* Check if key might be in set (false positives possible, no false negatives) */
-static inline int bloom_check(const char *key)
-{
-  if (!bloom_filter || !bloom_loaded)
-    return 1;  /* No bloom filter, assume might be in set */
-
-  for (int i = 0; i < BLOOM_K; i++) {
-    uint64_t hash = fnv1a_hash(key, i * 0x9E3779B97F4A7C15ULL);
-    uint64_t bit_pos = hash % BLOOM_SIZE_BITS;
-    if (!(bloom_filter[bit_pos / 8] & (1 << (bit_pos % 8))))
-      return 0;  /* Definitely NOT in set */
-  }
-  return 1;  /* Might be in set, need to check DB */
-}
-
-/* Load bloom filter from database */
-static void bloom_load(void)
-{
-  if (!db) return;
-
-  /* Allocate 1GB bloom filter */
-  bloom_filter = calloc(1, BLOOM_SIZE_BYTES);
-  if (!bloom_filter) {
-    my_syslog(LOG_ERR, "SQLite: Cannot allocate 1GB for Bloom filter");
-    return;
-  }
-
-  my_syslog(LOG_INFO, "SQLite: Building Bloom filter (1GB)...");
-  time_t start = time(NULL);
-
-  /* Load all domains from block_wildcard */
-  sqlite3_stmt *stmt;
-  int count = 0;
-
-  if (sqlite3_prepare_v2(db, "SELECT Domain FROM block_wildcard", -1, &stmt, NULL) == SQLITE_OK) {
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-      const char *domain = (const char *)sqlite3_column_text(stmt, 0);
-      if (domain) {
-        bloom_set(domain);
-        count++;
-      }
-    }
-    sqlite3_finalize(stmt);
-  }
-
-  /* Also load block_hosts */
-  if (sqlite3_prepare_v2(db, "SELECT Domain FROM block_hosts", -1, &stmt, NULL) == SQLITE_OK) {
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-      const char *domain = (const char *)sqlite3_column_text(stmt, 0);
-      if (domain) {
-        bloom_set(domain);
-        count++;
-      }
-    }
-    sqlite3_finalize(stmt);
-  }
-
-  time_t elapsed = time(NULL) - start;
-  bloom_loaded = 1;
-  my_syslog(LOG_INFO, "SQLite: Bloom filter ready - %d entries in %lds", count, elapsed);
-}
-
-static void bloom_cleanup(void)
-{
-  if (bloom_filter) {
-    free(bloom_filter);
-    bloom_filter = NULL;
-  }
-  bloom_loaded = 0;
-}
 
 /* ============================================================================
  * CIDR Rules in RAM (loaded at startup, no DB queries needed)
@@ -254,7 +134,8 @@ static void cidr_load(void)
   }
 
   sqlite3_finalize(stmt);
-  my_syslog(LOG_INFO, "SQLite: Loaded %d CIDR rules into RAM", cidr_count);
+  if (cidr_count > 0)
+    my_syslog(LOG_INFO, "SQLite: Loaded %d CIDR rules into RAM", cidr_count);
 }
 
 static void cidr_cleanup(void)
@@ -453,22 +334,6 @@ static void ipv6_normalize(const char *input, char *output, size_t outlen)
 }
 
 /* ============================================================================
- * Statistics
- * ============================================================================ */
-
-void db_print_stats(void)
-{
-  my_syslog(LOG_INFO, "SQLite Stats: queries=%lu, bloom_hits=%lu (%.1f%%), bloom_checks=%lu, blocks_exact=%lu, blocks_wildcard=%lu",
-            stat_queries,
-            stat_bloom_hits,
-            stat_queries > 0 ? (100.0 * stat_bloom_hits / stat_queries) : 0.0,
-            stat_bloom_checks,
-            stat_blocks_exact, stat_blocks_wildcard);
-  my_syslog(LOG_INFO, "SQLite Stats: rewrites_v4=%lu, rewrites_v6=%lu, cidr_rules=%d",
-            stat_rewrites_ipv4, stat_rewrites_ipv6, cidr_count);
-}
-
-/* ============================================================================
  * Database Functions
  * ============================================================================ */
 
@@ -559,9 +424,6 @@ void db_init(void)
   /* Load 2nd-level TLDs */
   if (tld2_file) tld2_load(tld2_file);
 
-  /* Load Bloom filter (1GB) */
-  bloom_load();
-
   /* Load CIDR rules into RAM */
   cidr_load();
 
@@ -588,8 +450,6 @@ void db_init(void)
 
 void db_cleanup(void)
 {
-  db_print_stats();
-
   if (stmt_block_hosts) { sqlite3_finalize(stmt_block_hosts); stmt_block_hosts = NULL; }
   if (stmt_block_wildcard) { sqlite3_finalize(stmt_block_wildcard); stmt_block_wildcard = NULL; }
   if (stmt_block_ips) { sqlite3_finalize(stmt_block_ips); stmt_block_ips = NULL; }
@@ -600,7 +460,6 @@ void db_cleanup(void)
   if (block_ipv4) { free(block_ipv4); block_ipv4 = NULL; }
   if (block_ipv6) { free(block_ipv6); block_ipv6 = NULL; }
 
-  bloom_cleanup();
   cidr_cleanup();
   tld2_cleanup();
 
@@ -608,7 +467,7 @@ void db_cleanup(void)
 }
 
 /* ============================================================================
- * Blocking Functions (with Bloom Filter optimization)
+ * Blocking Functions
  * ============================================================================ */
 
 int db_check_block(const char *name)
@@ -618,46 +477,27 @@ int db_check_block(const char *name)
   db_init();
   if (!db) return 0;
 
-  stat_queries++;
-
   /* Convert to lowercase */
   char name_lower[256];
   strncpy(name_lower, name, sizeof(name_lower) - 1);
   name_lower[sizeof(name_lower) - 1] = '\0';
   str_tolower(name_lower);
 
-  /* Get base domain for wildcard check */
-  const char *base = get_base_domain(name_lower);
-
-  /* BLOOM FILTER CHECK - Fast path for non-blocked domains
-   * Check both exact name and base domain */
-  if (!bloom_check(name_lower) && !bloom_check(base)) {
-    stat_bloom_hits++;
-    return 0;  /* Definitely NOT blocked - skip SQLite entirely */
-  }
-
-  stat_bloom_checks++;
-
-  /* Bloom says "might be blocked" - verify with SQLite */
-
   /* Check 1: Exact match in block_hosts */
   if (stmt_block_hosts) {
     sqlite3_reset(stmt_block_hosts);
     sqlite3_bind_text(stmt_block_hosts, 1, name_lower, -1, SQLITE_STATIC);
-    if (sqlite3_step(stmt_block_hosts) == SQLITE_ROW) {
-      stat_blocks_exact++;
+    if (sqlite3_step(stmt_block_hosts) == SQLITE_ROW)
       return 1;
-    }
   }
 
   /* Check 2: Base domain in block_wildcard */
   if (stmt_block_wildcard) {
+    const char *base = get_base_domain(name_lower);
     sqlite3_reset(stmt_block_wildcard);
     sqlite3_bind_text(stmt_block_wildcard, 1, base, -1, SQLITE_STATIC);
-    if (sqlite3_step(stmt_block_wildcard) == SQLITE_ROW) {
-      stat_blocks_wildcard++;
+    if (sqlite3_step(stmt_block_wildcard) == SQLITE_ROW)
       return 2;
-    }
   }
 
   return 0;
@@ -715,7 +555,7 @@ static char *db_get_rewrite_ip_internal(const char *source_ip, int is_ipv6)
     }
   }
 
-  /* CIDR matching from RAM (O(n) but n is small and all in RAM) */
+  /* CIDR matching from RAM */
   struct in_addr addr4;
   struct in6_addr addr6;
 
@@ -752,7 +592,6 @@ int db_rewrite_ipv4(struct in_addr *addr)
     struct in_addr new_addr;
     if (inet_pton(AF_INET, target, &new_addr) == 1) {
       *addr = new_addr;
-      stat_rewrites_ipv4++;
       return 1;
     }
   }
@@ -770,7 +609,6 @@ int db_rewrite_ipv6(struct in6_addr *addr)
     struct in6_addr new_addr;
     if (inet_pton(AF_INET6, target, &new_addr) == 1) {
       *addr = new_addr;
-      stat_rewrites_ipv6++;
       return 1;
     }
   }
