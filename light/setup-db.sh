@@ -24,17 +24,17 @@ CREATE TABLE IF NOT EXISTS block_ips (
     Target_IP TEXT NOT NULL
 ) WITHOUT ROWID;
 
--- Performance settings (optimized for 128GB RAM / 8 Core)
+-- Performance settings (optimized for 128GB RAM / 8 Core / 7GB+ DB)
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
-PRAGMA cache_size = -2097152;      -- 2GB RAM Cache
-PRAGMA mmap_size = 4294967296;     -- 4GB Memory-mapped I/O
+PRAGMA cache_size = -10485760;     -- 10GB RAM Cache (komplette DB + Reserve)
+PRAGMA mmap_size = 17179869184;    -- 16GB Memory-mapped I/O
 PRAGMA temp_store = MEMORY;
 PRAGMA page_size = 4096;
 
 -- Verify
 SELECT 'Tables: block_wildcard, block_hosts, block_ips';
-SELECT 'Cache: 2GB | mmap: 4GB | Optimized for HP DL120';
+SELECT 'Cache: 10GB | mmap: 16GB | Optimized for HP DL120 (7GB+ DB)';
 EOF
 
 echo "Done: $DB"
