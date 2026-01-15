@@ -18,7 +18,7 @@
 #   2001:db8::1
 
 # Configuration
-INPUT="${1}"
+INPUT="${1:-/op/databaseAVX/ip/delete}"
 DATABASE="${2:-/usr/local/etc/dnsmasq/aviontex.db}"
 DNSMASQ_GROUP="wheel"
 

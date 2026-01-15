@@ -16,7 +16,7 @@
 #   malware.test.net
 
 # Configuration
-HOSTFILE="${1:-/usr/local/etc/hosts-blocklist.txt}"
+HOSTFILE="${1:-/op/databaseAVX/hosts/import}"
 DATABASE="${2:-/usr/local/etc/dnsmasq/aviontex.db}"
 DNSMASQ_GROUP="wheel"
 

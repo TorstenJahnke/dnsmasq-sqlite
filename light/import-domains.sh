@@ -1,22 +1,22 @@
 #!/bin/sh
-# Incremental import for block_ips (IP address rewriting)
+# Incremental import for block_wildcard (domain wildcard blocking)
 # Version: 5.0
 #
-# This script adds IP rewrite rules to an EXISTING database without recreating it.
+# This script adds domains to an EXISTING database without recreating it.
 # Duplicates are automatically skipped (INSERT OR IGNORE).
+# Wildcard: blocks domain AND all subdomains (e.g., example.com blocks *.example.com)
 #
-# Usage: ./import-ips.sh [file] [database]
-#        ./import-ips.sh /path/to/ips.txt
-#        ./import-ips.sh /path/to/ips.txt /path/to/db.db
+# Usage: ./import-domains.sh [file] [database]
+#        ./import-domains.sh /path/to/domains.txt
+#        ./import-domains.sh /path/to/domains.txt /path/to/db.db
 #
-# Input format: CSV with Source_IP,Target_IP (one per line)
+# Input format: One domain per line
 # Example:
-#   178.223.16.21,10.20.0.10
-#   192.168.1.100,10.0.0.1
-#   2001:db8::1,fd00::1
+#   ads.example.com      <- blocks ads.example.com AND *.ads.example.com
+#   tracker.org          <- blocks tracker.org AND *.tracker.org
 
 # Configuration
-IPFILE="${1:-/op/databaseAVX/ip/import}"
+DOMAINFILE="${1:-/op/databaseAVX/domains/import}"
 DATABASE="${2:-/usr/local/etc/dnsmasq/aviontex.db}"
 DNSMASQ_GROUP="wheel"
 
@@ -28,13 +28,13 @@ NC='\033[0m'
 
 echo ""
 echo "=========================================="
-echo " Incremental IP Import (block_ips)"
+echo " Incremental Domain Import (block_wildcard)"
 echo "=========================================="
 echo ""
 
 # Check if files exist
-if [ ! -f "$IPFILE" ]; then
-    echo "${RED}Error: $IPFILE not found${NC}"
+if [ ! -f "$DOMAINFILE" ]; then
+    echo "${RED}Error: $DOMAINFILE not found${NC}"
     exit 1
 fi
 
@@ -45,21 +45,19 @@ if [ ! -f "$DATABASE" ]; then
 fi
 
 # Count entries
-LINES=$(wc -l < "$IPFILE" | tr -d ' ')
-BEFORE=$(sqlite3 "$DATABASE" "SELECT COUNT(*) FROM block_ips;" 2>/dev/null)
+LINES=$(wc -l < "$DOMAINFILE" | tr -d ' ')
+BEFORE=$(sqlite3 "$DATABASE" "SELECT COUNT(*) FROM block_wildcard;" 2>/dev/null)
 
 if [ -z "$BEFORE" ]; then
-    echo "${RED}Error: block_ips table does not exist${NC}"
+    echo "${RED}Error: block_wildcard table does not exist${NC}"
     echo "Run setup-db.sh first!"
     exit 1
 fi
 
-echo "Input file:  $IPFILE"
+echo "Input file:  $DOMAINFILE"
 echo "New entries: $LINES"
 echo "Database:    $DATABASE"
 echo "Before:      $BEFORE"
-echo ""
-echo "Format: Source_IP,Target_IP"
 echo ""
 
 # Import with INSERT OR IGNORE (skips duplicates)
@@ -67,8 +65,8 @@ echo "Importing..."
 sqlite3 "$DATABASE" << SQL
 PRAGMA synchronous = OFF;
 PRAGMA cache_size = -1048576;
-.mode csv
-.import '$IPFILE' block_ips
+.mode list
+.import '$DOMAINFILE' block_wildcard
 SQL
 
 # Set permissions
@@ -76,7 +74,7 @@ chown root:${DNSMASQ_GROUP} "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/d
 chmod 644 "$DATABASE" "${DATABASE}-wal" "${DATABASE}-shm" 2>/dev/null
 
 # Statistics
-AFTER=$(sqlite3 "$DATABASE" "SELECT COUNT(*) FROM block_ips;")
+AFTER=$(sqlite3 "$DATABASE" "SELECT COUNT(*) FROM block_wildcard;")
 ADDED=$((AFTER - BEFORE))
 
 echo ""
