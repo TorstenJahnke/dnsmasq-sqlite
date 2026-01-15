@@ -407,9 +407,9 @@ void db_init(void)
     return;
   }
 
-  /* Performance settings - aggressive for 128GB RAM */
-  sqlite3_exec(db, "PRAGMA cache_size = -2097152", NULL, NULL, NULL);   /* 2GB cache */
-  sqlite3_exec(db, "PRAGMA mmap_size = 17179869184", NULL, NULL, NULL); /* 16GB mmap */
+  /* Performance settings - aggressive for 128GB RAM / 7GB+ DB */
+  sqlite3_exec(db, "PRAGMA cache_size = -20971520", NULL, NULL, NULL);  /* 20GB cache */
+  sqlite3_exec(db, "PRAGMA mmap_size = 21474836480", NULL, NULL, NULL); /* 20GB mmap */
   sqlite3_exec(db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
   sqlite3_exec(db, "PRAGMA query_only = ON", NULL, NULL, NULL);
 
