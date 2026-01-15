@@ -25,8 +25,12 @@ service dnsmasq restart
 - `block_exact` - Exact domain matches only
 - `block_wildcard_fast` - Matches domain and all subdomains
 
-## Files
+## Inkrementelle Import/Delete Skripte
 
-- `setup-db.sh` - Creates the database
-- `import-blocklist.sh` - Imports domains from text file
-- `dnsmasq.conf.example` - Example configuration
+| Typ | Import | Delete |
+|-----|--------|--------|
+| Domains (wildcard) | `/op/databaseAVX/domains/import` | `/op/databaseAVX/domains/delete` |
+| Hosts (exact) | `/op/databaseAVX/hosts/import` | `/op/databaseAVX/hosts/delete` |
+| IPs | `/op/databaseAVX/ip/import` | `/op/databaseAVX/ip/delete` |
+
+Datenbank: `/usr/local/etc/dnsmasq/aviontex.db`
