@@ -1,25 +1,27 @@
 # dnsmasq-sqlite
 
-SQLite-basierter DNS-Blocker für DNSMASQ v2.91 mit Performance-Optimierungen
+SQLite-basierter DNS-Blocker für DNSMASQ v2.92 mit Performance-Optimierungen
 
-**Status:** ✅ **PRODUCTION-READY** (Phase 1 + Phase 2 complete)
+**Status:** PRODUCTION-READY (Phase 1 + Phase 2 complete)
+**Version:** dnsmasq 2.92 (Final Release)
 **Performance:** 25K-35K QPS (12x-17x improvement over baseline)
 
 ---
 
-## 📂 Repository-Struktur
+## Repository-Struktur
 
 ```
 dnsmasq-sqlite/
 ├── README.md                  # Diese Datei
-├── dnsmasq-2.91/              # Complete DNSMASQ v2.91 source code (with patches)
-├── dnsmasq2.91-PATCH/         # Isolated patches for easy version upgrades
-│   ├── src/db.c               # ✅ Phase 1+2: Thread-safe, memory-leak-free
-│   ├── src/dnsmasq           # ✅ Compiled binary (463 KB, zero warnings)
-│   ├── FIXES_APPLIED.md       # Summary of all critical fixes
-│   ├── PHASE2_IMPLEMENTATION.md  # Connection pool documentation
-│   ├── NORMALIZED_SCHEMA.sql  # Optimized schema (73% storage savings)
-│   └── README.md              # Deployment guide
+├── dnsmasq-2.92/              # Complete DNSMASQ v2.92 source code (with patches)
+├── dnsmasq2.92-PATCH/         # Isolated patches for easy version upgrades
+│   ├── src/db.c               # Phase 1+2: Thread-safe, memory-leak-free
+│   ├── src/config.h           # HAVE_SQLITE build configuration
+│   ├── src/dnsmasq.h          # SQLite function prototypes
+│   ├── src/option.c           # SQLite configuration options
+│   ├── src/forward.c          # IP rewriting in responses
+│   ├── src/rfc1035.c          # Domain blocking
+│   └── Makefile               # SQLite build support
 ├── docs/                      # 📚 Complete documentation
 │   ├── README.md              # Documentation index (START HERE)
 │   ├── FIXES_APPLIED.md       # Critical fixes summary
