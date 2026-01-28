@@ -1677,35 +1677,29 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
           /* Domain is blocked - return block IP */
           if (qtype == T_A && block_ipv4)
             {
-              struct in_addr addr;
-              if (inet_pton(AF_INET, block_ipv4, &addr) == 1)
+              struct in_addr blocked_addr;
+              if (inet_pton(AF_INET, block_ipv4, &blocked_addr) == 1)
                 {
                   ans = 1;
                   sec_data = 0;
-                  if (!dryrun)
-                    {
-                      log_query(F_CONFIG | F_FORWARD | F_IPV4, name, (union all_addr *)&addr, NULL, 0);
-                      if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
-                                              daemon->local_ttl, NULL, T_A, C_IN, "4", &addr))
-                        anscount++;
-                    }
+                  log_query(F_CONFIG | F_FORWARD | F_IPV4, name, (union all_addr *)&blocked_addr, NULL, 0);
+                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                          daemon->local_ttl, NULL, T_A, C_IN, "4", &blocked_addr))
+                    anscount++;
                   goto sqlite_blocked;
                 }
             }
           else if (qtype == T_AAAA && block_ipv6)
             {
-              struct in6_addr addr;
-              if (inet_pton(AF_INET6, block_ipv6, &addr) == 1)
+              struct in6_addr blocked_addr6;
+              if (inet_pton(AF_INET6, block_ipv6, &blocked_addr6) == 1)
                 {
                   ans = 1;
                   sec_data = 0;
-                  if (!dryrun)
-                    {
-                      log_query(F_CONFIG | F_FORWARD | F_IPV6, name, (union all_addr *)&addr, NULL, 0);
-                      if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
-                                              daemon->local_ttl, NULL, T_AAAA, C_IN, "6", &addr))
-                        anscount++;
-                    }
+                  log_query(F_CONFIG | F_FORWARD | F_IPV6, name, (union all_addr *)&blocked_addr6, NULL, 0);
+                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                          daemon->local_ttl, NULL, T_AAAA, C_IN, "6", &blocked_addr6))
+                    anscount++;
                   goto sqlite_blocked;
                 }
             }
