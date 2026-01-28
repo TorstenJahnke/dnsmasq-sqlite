@@ -71,7 +71,7 @@ nft_cflags =    `echo $(COPTS) | $(top)/bld/pkg-wrapper HAVE_NFTSET $(PKG_CONFIG
 nft_libs =      `echo $(COPTS) | $(top)/bld/pkg-wrapper HAVE_NFTSET $(PKG_CONFIG) --libs libnftables`
 sqlite_cflags = `if uname | grep -q FreeBSD; then echo -I/usr/local/include; else $(PKG_CONFIG) --cflags sqlite3 2>/dev/null; fi`
 sqlite_libs =   `if uname | grep -q FreeBSD; then echo -L/usr/local/lib -lsqlite3; else $(PKG_CONFIG) --libs sqlite3 2>/dev/null || echo -lsqlite3; fi`
-version =       -DVERSION='\"`$(top)/bld/get-version $(top)`\"'
+version =       -DVERSION='"Aviontex 2.92 SQLITE Edition"'
 
 sum?=$(shell echo $(CC) -DDNSMASQ_COMPILE_FLAGS="$(CFLAGS)" -DDNSMASQ_COMPILE_OPTS $(COPTS) -E $(top)/$(SRC)/dnsmasq.h | ( md5sum 2>/dev/null || md5 ) | cut -f 1 -d ' ')
 sum!=echo $(CC) -DDNSMASQ_COMPILE_FLAGS="$(CFLAGS)" -DDNSMASQ_COMPILE_OPTS $(COPTS) -E $(top)/$(SRC)/dnsmasq.h | ( md5sum 2>/dev/null || md5 ) | cut -f 1 -d ' '
