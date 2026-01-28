@@ -24,31 +24,45 @@
 static int sqlite_rewrite_response_ips(struct dns_header *header, size_t n)
 {
   unsigned char *p, *ansp;
+  unsigned char *packet_end = (unsigned char *)header + n;
   int i, rewritten = 0;
   unsigned short type, class, rdlen;
 
   /* Skip past question section */
   p = (unsigned char *)(header + 1);
   for (i = 0; i < ntohs(header->qdcount); i++) {
-    while (*p && p < (unsigned char *)header + n)
+    while (p < packet_end && *p) {
+      if (p + *p + 1 > packet_end)
+        return rewritten; /* Malformed packet */
       p += *p + 1;
-    p += 5; /* null byte + qtype (2) + qclass (2) */
+    }
+    /* Check bounds before skipping null byte + qtype (2) + qclass (2) */
+    if (p + 5 > packet_end)
+      return rewritten; /* Malformed packet */
+    p += 5;
   }
 
   /* Process answer section */
   for (i = 0; i < ntohs(header->ancount); i++) {
     /* Skip name (compressed or uncompressed) */
-    while (*p && p < (unsigned char *)header + n) {
+    while (p < packet_end && *p) {
       if ((*p & 0xC0) == 0xC0) {
+        if (p + 2 > packet_end)
+          return rewritten; /* Malformed packet */
         p += 2;
         goto got_name;
       }
+      if (p + *p + 1 > packet_end)
+        return rewritten; /* Malformed packet */
       p += *p + 1;
     }
+    if (p >= packet_end)
+      return rewritten; /* Malformed packet */
     p++; /* skip null terminator */
 
   got_name:
-    if (p + 10 > (unsigned char *)header + n)
+    /* TYPE(2) + CLASS(2) + TTL(4) + RDLEN(2) = 10 bytes */
+    if (p + 10 > packet_end)
       break;
 
     GETSHORT(type, p);
@@ -58,15 +72,29 @@ static int sqlite_rewrite_response_ips(struct dns_header *header, size_t n)
 
     ansp = p;
 
+    /* Check rdlen doesn't exceed packet bounds */
+    if (p + rdlen > packet_end)
+      break;
+
     if (class == C_IN) {
       if (type == T_A && rdlen == 4) {
-        struct in_addr *addr = (struct in_addr *)ansp;
-        if (db_rewrite_ipv4(addr))
-          rewritten++;
+        /* Use memcpy to avoid alignment/aliasing issues */
+        struct in_addr addr;
+        memcpy(&addr, ansp, sizeof(addr));
+        if (db_rewrite_ipv4(&addr))
+          {
+            memcpy(ansp, &addr, sizeof(addr));
+            rewritten++;
+          }
       } else if (type == T_AAAA && rdlen == 16) {
-        struct in6_addr *addr = (struct in6_addr *)ansp;
-        if (db_rewrite_ipv6(addr))
-          rewritten++;
+        /* Use memcpy to avoid alignment/aliasing issues */
+        struct in6_addr addr;
+        memcpy(&addr, ansp, sizeof(addr));
+        if (db_rewrite_ipv6(&addr))
+          {
+            memcpy(ansp, &addr, sizeof(addr));
+            rewritten++;
+          }
       }
     }
 

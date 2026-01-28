@@ -83,7 +83,11 @@ static int parse_cidr(const char *cidr, struct in_addr *addr4, struct in6_addr *
   memcpy(ip_part, cidr, ip_len);
   ip_part[ip_len] = '\0';
 
-  prefix_len = atoi(slash + 1);
+  /* Safe conversion with strtol instead of atoi */
+  char *endptr;
+  long prefix_long = strtol(slash + 1, &endptr, 10);
+  if (*endptr != '\0' || prefix_long < 0) return -1;
+  prefix_len = (int)prefix_long;
 
   if (strchr(ip_part, ':')) {
     *is_ipv6 = 1;
@@ -340,31 +344,61 @@ static void ipv6_normalize(const char *input, char *output, size_t outlen)
 void db_set_file(char *path)
 {
   if (db_file) free(db_file);
-  db_file = path ? strdup(path) : NULL;
+  if (path) {
+    db_file = strdup(path);
+    if (!db_file)
+      my_syslog(LOG_ERR, "SQLite: Memory allocation failed for db_file");
+  } else {
+    db_file = NULL;
+  }
 }
 
 void db_set_tld2_file(char *path)
 {
   if (tld2_file) free(tld2_file);
-  tld2_file = path ? strdup(path) : NULL;
+  if (path) {
+    tld2_file = strdup(path);
+    if (!tld2_file)
+      my_syslog(LOG_ERR, "SQLite: Memory allocation failed for tld2_file");
+  } else {
+    tld2_file = NULL;
+  }
 }
 
 void db_set_block_ipv4(char *ip)
 {
   if (block_ipv4) free(block_ipv4);
-  block_ipv4 = ip ? strdup(ip) : NULL;
+  if (ip) {
+    block_ipv4 = strdup(ip);
+    if (!block_ipv4)
+      my_syslog(LOG_ERR, "SQLite: Memory allocation failed for block_ipv4");
+  } else {
+    block_ipv4 = NULL;
+  }
 }
 
 void db_set_block_ipv6(char *ip)
 {
   if (block_ipv6) free(block_ipv6);
-  block_ipv6 = ip ? strdup(ip) : NULL;
+  if (ip) {
+    block_ipv6 = strdup(ip);
+    if (!block_ipv6)
+      my_syslog(LOG_ERR, "SQLite: Memory allocation failed for block_ipv6");
+  } else {
+    block_ipv6 = NULL;
+  }
 }
 
 void db_set_block_txt(char *txt)
 {
   if (block_txt) free(block_txt);
-  block_txt = txt ? strdup(txt) : NULL;
+  if (txt) {
+    block_txt = strdup(txt);
+    if (!block_txt)
+      my_syslog(LOG_ERR, "SQLite: Memory allocation failed for block_txt");
+  } else {
+    block_txt = NULL;
+  }
 }
 
 void db_set_block_mx(char *mx)
@@ -372,13 +406,24 @@ void db_set_block_mx(char *mx)
   if (!mx) { if (block_mx) free(block_mx); block_mx = NULL; return; }
   char *space = strchr(mx, ' ');
   if (space) {
-    block_mx_prio = atoi(mx);
+    /* Safe conversion with strtol instead of atoi */
+    char *endptr;
+    long prio = strtol(mx, &endptr, 10);
+    if (endptr != space || prio < 0 || prio > 65535) {
+      block_mx_prio = 10; /* Default on parse error */
+    } else {
+      block_mx_prio = (int)prio;
+    }
     if (block_mx) free(block_mx);
     block_mx = strdup(space + 1);
+    if (!block_mx)
+      my_syslog(LOG_ERR, "SQLite: Memory allocation failed for block_mx");
   } else {
     block_mx_prio = 10;
     if (block_mx) free(block_mx);
     block_mx = strdup(mx);
+    if (!block_mx)
+      my_syslog(LOG_ERR, "SQLite: Memory allocation failed for block_mx");
   }
 }
 
@@ -394,7 +439,13 @@ void db_init(void)
 
   if (!db_file) {
     char *env = getenv("DNSMASQ_SQLITE_DB");
-    if (env && *env) db_file = strdup(env);
+    if (env && *env) {
+      db_file = strdup(env);
+      if (!db_file) {
+        my_syslog(LOG_ERR, "SQLite: Memory allocation failed for db_file from environment");
+        return;
+      }
+    }
     else return;
   }
 
@@ -413,13 +464,22 @@ void db_init(void)
   sqlite3_exec(db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
   sqlite3_exec(db, "PRAGMA query_only = ON", NULL, NULL, NULL);
 
-  /* Prepare statements */
-  sqlite3_prepare_v2(db, "SELECT 1 FROM block_hosts WHERE Domain = ? LIMIT 1",
-                     -1, &stmt_block_hosts, NULL);
-  sqlite3_prepare_v2(db, "SELECT 1 FROM block_wildcard WHERE Domain = ? LIMIT 1",
-                     -1, &stmt_block_wildcard, NULL);
-  sqlite3_prepare_v2(db, "SELECT Target_IP FROM block_ips WHERE Source_IP = ? LIMIT 1",
-                     -1, &stmt_block_ips, NULL);
+  /* Prepare statements (with error handling) */
+  if (sqlite3_prepare_v2(db, "SELECT 1 FROM block_hosts WHERE Domain = ? LIMIT 1",
+                         -1, &stmt_block_hosts, NULL) != SQLITE_OK) {
+    my_syslog(LOG_WARNING, "SQLite: Failed to prepare block_hosts statement: %s", sqlite3_errmsg(db));
+    stmt_block_hosts = NULL;
+  }
+  if (sqlite3_prepare_v2(db, "SELECT 1 FROM block_wildcard WHERE Domain = ? LIMIT 1",
+                         -1, &stmt_block_wildcard, NULL) != SQLITE_OK) {
+    my_syslog(LOG_WARNING, "SQLite: Failed to prepare block_wildcard statement: %s", sqlite3_errmsg(db));
+    stmt_block_wildcard = NULL;
+  }
+  if (sqlite3_prepare_v2(db, "SELECT Target_IP FROM block_ips WHERE Source_IP = ? LIMIT 1",
+                         -1, &stmt_block_ips, NULL) != SQLITE_OK) {
+    my_syslog(LOG_WARNING, "SQLite: Failed to prepare block_ips statement: %s", sqlite3_errmsg(db));
+    stmt_block_ips = NULL;
+  }
 
   /* Load 2nd-level TLDs */
   if (tld2_file) tld2_load(tld2_file);
@@ -459,6 +519,8 @@ void db_cleanup(void)
   if (tld2_file) { free(tld2_file); tld2_file = NULL; }
   if (block_ipv4) { free(block_ipv4); block_ipv4 = NULL; }
   if (block_ipv6) { free(block_ipv6); block_ipv6 = NULL; }
+  if (block_txt) { free(block_txt); block_txt = NULL; }
+  if (block_mx) { free(block_mx); block_mx = NULL; }
 
   cidr_cleanup();
   tld2_cleanup();
@@ -517,7 +579,9 @@ int db_get_block_ips(const char *name, char **ipv4_out, char **ipv6_out)
  * IP Rewriting Functions (with RAM-based CIDR matching)
  * ============================================================================ */
 
-static char ip_rewrite_buffer[INET6_ADDRSTRLEN + 1];
+/* Thread-local buffer to avoid race conditions when multiple threads
+ * call db_rewrite_ipv4/ipv6 concurrently. Each thread gets its own buffer. */
+static __thread char ip_rewrite_buffer[INET6_ADDRSTRLEN + 1];
 
 static char *db_get_rewrite_ip_internal(const char *source_ip, int is_ipv6)
 {
@@ -615,17 +679,20 @@ int db_rewrite_ipv6(struct in6_addr *addr)
   return 0;
 }
 
-/* Legacy compatibility */
+/* Legacy compatibility functions.
+ * Note: These return pointers to thread-local static variables.
+ * The caller must use the result immediately before calling again.
+ * Thread-safe: each thread has its own static variable. */
 struct in_addr *db_get_block_ipv4(void)
 {
-  static struct in_addr addr;
+  static __thread struct in_addr addr;
   if (block_ipv4 && inet_pton(AF_INET, block_ipv4, &addr) == 1) return &addr;
   return NULL;
 }
 
 struct in6_addr *db_get_block_ipv6(void)
 {
-  static struct in6_addr addr;
+  static __thread struct in6_addr addr;
   if (block_ipv6 && inet_pton(AF_INET6, block_ipv6, &addr) == 1) return &addr;
   return NULL;
 }
