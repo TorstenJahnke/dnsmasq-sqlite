@@ -67,10 +67,14 @@
 #define T_DNAME         39
 #define T_OPT		41
 #define T_DS            43
+#define T_SSHFP         44
 #define T_RRSIG         46
 #define T_NSEC          47
 #define T_DNSKEY        48
 #define T_NSEC3         50
+#define T_SMIMEA        53
+#define T_SVCB          64
+#define T_HTTPS         65
 #define	T_TKEY		249		
 #define	T_TSIG		250
 #define T_AXFR          252
