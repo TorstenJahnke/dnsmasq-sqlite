@@ -1667,41 +1667,155 @@ size_t answer_request(struct dns_header *header, char *limit, size_t qlen,
   ans = 0; /* have we answered this question */
 
 #ifdef HAVE_SQLITE
-  /* SQLite Blocking: Check if domain should be blocked */
-  if (qclass == C_IN && (qtype == T_A || qtype == T_AAAA))
+  /* SQLite Blocking: Check if domain should be blocked for various record types */
+  if (qclass == C_IN)
     {
       char *block_ipv4 = NULL;
       char *block_ipv6 = NULL;
-      if (db_get_block_ips(name, &block_ipv4, &block_ipv6))
+      int is_blocked = db_get_block_ips(name, &block_ipv4, &block_ipv6);
+
+      if (is_blocked)
         {
-          /* Domain is blocked - return block IP */
-          if (qtype == T_A && block_ipv4)
+          ans = 1;
+          sec_data = 0;
+
+          switch (qtype)
             {
-              struct in_addr blocked_addr;
-              if (inet_pton(AF_INET, block_ipv4, &blocked_addr) == 1)
+            case T_A:
+              if (block_ipv4)
                 {
-                  ans = 1;
-                  sec_data = 0;
-                  log_query(F_CONFIG | F_FORWARD | F_IPV4, name, (union all_addr *)&blocked_addr, NULL, 0);
-                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
-                                          daemon->local_ttl, NULL, T_A, C_IN, "4", &blocked_addr))
-                    anscount++;
-                  goto sqlite_blocked;
+                  struct in_addr blocked_addr;
+                  if (inet_pton(AF_INET, block_ipv4, &blocked_addr) == 1)
+                    {
+                      log_query(F_CONFIG | F_FORWARD | F_IPV4, name, (union all_addr *)&blocked_addr, NULL, 0);
+                      if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                              daemon->local_ttl, NULL, T_A, C_IN, "4", &blocked_addr))
+                        anscount++;
+                    }
                 }
-            }
-          else if (qtype == T_AAAA && block_ipv6)
-            {
-              struct in6_addr blocked_addr6;
-              if (inet_pton(AF_INET6, block_ipv6, &blocked_addr6) == 1)
+              goto sqlite_blocked;
+
+            case T_AAAA:
+              if (block_ipv6)
                 {
-                  ans = 1;
-                  sec_data = 0;
-                  log_query(F_CONFIG | F_FORWARD | F_IPV6, name, (union all_addr *)&blocked_addr6, NULL, 0);
-                  if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
-                                          daemon->local_ttl, NULL, T_AAAA, C_IN, "6", &blocked_addr6))
-                    anscount++;
-                  goto sqlite_blocked;
+                  struct in6_addr blocked_addr6;
+                  if (inet_pton(AF_INET6, block_ipv6, &blocked_addr6) == 1)
+                    {
+                      log_query(F_CONFIG | F_FORWARD | F_IPV6, name, (union all_addr *)&blocked_addr6, NULL, 0);
+                      if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                              daemon->local_ttl, NULL, T_AAAA, C_IN, "6", &blocked_addr6))
+                        anscount++;
+                    }
                 }
+              goto sqlite_blocked;
+
+            case T_TXT:
+              {
+                char *block_txt = db_get_block_txt();
+                if (block_txt)
+                  {
+                    /* TXT records need length prefix; build proper format */
+                    size_t txt_len = strlen(block_txt);
+                    if (txt_len > 255) txt_len = 255; /* TXT chunks max 255 bytes */
+                    unsigned char txt_rdata[256];
+                    txt_rdata[0] = (unsigned char)txt_len;
+                    memcpy(txt_rdata + 1, block_txt, txt_len);
+                    log_query(F_CONFIG | F_FORWARD, name, NULL, NULL, 0);
+                    if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                            daemon->local_ttl, NULL, T_TXT, C_IN, "t", (int)(txt_len + 1), txt_rdata))
+                      anscount++;
+                  }
+              }
+              goto sqlite_blocked;
+
+            case T_MX:
+              {
+                char *block_mx = db_get_block_mx();
+                int block_mx_prio = db_get_block_mx_prio();
+                if (block_mx)
+                  {
+                    log_query(F_CONFIG | F_FORWARD, name, NULL, NULL, 0);
+                    if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                            daemon->local_ttl, NULL, T_MX, C_IN, "sd", block_mx_prio, block_mx))
+                      anscount++;
+                  }
+              }
+              goto sqlite_blocked;
+
+            case T_CAA:
+              /* CAA: 0 issue ";" and 0 issuewild ";" - deny all certificate issuance */
+              log_query(F_CONFIG | F_FORWARD, name, NULL, NULL, 0);
+              {
+                /* CAA wire format: flags(1) + tag_length(1) + tag + value */
+                unsigned char caa_issue[] = { 0, 5, 'i','s','s','u','e', ';' };
+                unsigned char caa_issuewild[] = { 0, 9, 'i','s','s','u','e','w','i','l','d', ';' };
+                if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                        daemon->local_ttl, NULL, T_CAA, C_IN, "t", (int)sizeof(caa_issue), caa_issue))
+                  anscount++;
+                if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                        daemon->local_ttl, NULL, T_CAA, C_IN, "t", (int)sizeof(caa_issuewild), caa_issuewild))
+                  anscount++;
+              }
+              goto sqlite_blocked;
+
+            case T_HTTPS:
+            case T_SVCB:
+              /* HTTPS/SVCB: 0 . (no service) - SvcPriority=0, TargetName="." */
+              log_query(F_CONFIG | F_FORWARD, name, NULL, NULL, 0);
+              if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                      daemon->local_ttl, NULL, qtype, C_IN, "sd", 0, "."))
+                anscount++;
+              goto sqlite_blocked;
+
+            case T_SRV:
+              /* SRV: 0 0 0 . (no service available) */
+              log_query(F_CONFIG | F_FORWARD, name, NULL, NULL, 0);
+              if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                      daemon->local_ttl, NULL, T_SRV, C_IN, "sssd", 0, 0, 0, "."))
+                anscount++;
+              goto sqlite_blocked;
+
+            case T_NAPTR:
+              /* NAPTR: 0 0 "" "" "" . (null response) */
+              log_query(F_CONFIG | F_FORWARD, name, NULL, NULL, 0);
+              if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                      daemon->local_ttl, NULL, T_NAPTR, C_IN, "sszzzd", 0, 0, "", "", "", "."))
+                anscount++;
+              goto sqlite_blocked;
+
+            case T_SSHFP:
+              /* SSHFP: 1 1 <40 zeros> (null fingerprint) */
+              log_query(F_CONFIG | F_FORWARD, name, NULL, NULL, 0);
+              {
+                unsigned char sshfp_data[22]; /* algo(1) + type(1) + fingerprint(20) */
+                memset(sshfp_data, 0, sizeof(sshfp_data));
+                sshfp_data[0] = 1; /* RSA */
+                sshfp_data[1] = 1; /* SHA-1 */
+                if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                        daemon->local_ttl, NULL, T_SSHFP, C_IN, "t", 22, sshfp_data))
+                  anscount++;
+              }
+              goto sqlite_blocked;
+
+            case T_SMIMEA:
+              /* SMIMEA: 3 1 1 <64 zeros> (null S/MIME cert) */
+              log_query(F_CONFIG | F_FORWARD, name, NULL, NULL, 0);
+              {
+                unsigned char smimea_data[35]; /* usage(1) + selector(1) + matching(1) + hash(32) */
+                memset(smimea_data, 0, sizeof(smimea_data));
+                smimea_data[0] = 3; /* DANE-EE */
+                smimea_data[1] = 1; /* SPKI */
+                smimea_data[2] = 1; /* SHA-256 */
+                if (add_resource_record(header, limit, &trunc, nameoffset, &ansp,
+                                        daemon->local_ttl, NULL, T_SMIMEA, C_IN, "t", 35, smimea_data))
+                  anscount++;
+              }
+              goto sqlite_blocked;
+
+            default:
+              /* For other record types, don't block - let normal processing handle it */
+              ans = 0;
+              break;
             }
         }
     }
